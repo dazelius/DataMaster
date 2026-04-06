@@ -30,6 +30,14 @@ function registerRepos() {
       localDir: resolve(baseDir, 'code'),
       label: 'Game Code',
       shallow: true,
+      branch: 'develop',
+      sparsePatterns: [
+        '*.cs', '*.lua', '*.json', '*.xml', '*.yaml', '*.yml',
+        '*.txt', '*.md', '*.cfg', '*.ini', '*.toml',
+        '*.shader', '*.hlsl', '*.cginc', '*.compute',
+        '*.asmdef', '*.asmref', '*.proto',
+        '*.png',
+      ],
     });
   }
 }

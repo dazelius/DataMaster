@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSyncStore, type RepoSyncStatus } from '../../stores/syncStore';
+import { useChatStore } from '../../stores/chatStore';
 import { useWikiStats } from '../../hooks/useWikiStats';
 
 const NAV_ITEMS = [
@@ -19,6 +20,7 @@ const NAV_ITEMS = [
 const REPO_LABELS: Record<string, string> = {
   data: 'Game Data',
   code: 'Game Code',
+  localize: 'Localizing',
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -208,6 +210,7 @@ function SyncPanel() {
 export function Sidebar() {
   const isSyncing = useSyncStore((s) => s.isSyncing);
   const { stats: wikiStats } = useWikiStats();
+  const isWikiWriting = useChatStore((s) => s.activeTools.some((t) => t.name === 'wiki_write' && (t.status === 'running' || t.status === 'generating')));
 
   return (
     <aside className="hidden md:flex w-60 h-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-1)]">
@@ -243,14 +246,24 @@ export function Sidebar() {
               <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
             </svg>
             <span className="flex-1">{item.label}</span>
-            {item.to === '/wiki' && wikiStats.totalPages > 0 && (
+            {item.to === '/wiki' && (
               <span className="flex items-center gap-1.5">
-                {wikiStats.recentCount > 0 && (
+                {isWikiWriting && (
+                  <span className="flex items-center gap-1 rounded-full bg-purple-500/20 px-1.5 py-0.5">
+                    <svg className="w-3 h-3 text-purple-400 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z" />
+                    </svg>
+                    <span className="text-[9px] font-medium text-purple-300">저장 중</span>
+                  </span>
+                )}
+                {!isWikiWriting && wikiStats.recentCount > 0 && (
                   <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
                 )}
-                <span className="min-w-[20px] rounded-full bg-[var(--color-surface-3)] px-1.5 py-0.5 text-center text-[10px] font-semibold leading-none text-[var(--color-text-secondary)]">
-                  {wikiStats.totalPages}
-                </span>
+                {wikiStats.totalPages > 0 && (
+                  <span className="min-w-[20px] rounded-full bg-[var(--color-surface-3)] px-1.5 py-0.5 text-center text-[10px] font-semibold leading-none text-[var(--color-text-secondary)]">
+                    {wikiStats.totalPages}
+                  </span>
+                )}
               </span>
             )}
           </NavLink>

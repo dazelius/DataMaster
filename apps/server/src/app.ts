@@ -8,6 +8,7 @@ import { dataRoutes } from './routes/data.js';
 import { chatRoutes } from './routes/chat.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { stringDataRoutes } from './routes/stringdata.js';
+import { assetRoutes } from './routes/assets.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -40,6 +41,7 @@ export async function buildApp() {
   app.register(chatRoutes, { prefix: '/api' });
   app.register(wikiRoutes, { prefix: '/api/wiki' });
   app.register(stringDataRoutes, { prefix: '/api/stringdata' });
+  app.register(assetRoutes, { prefix: '/api/assets' });
 
   return app;
 }

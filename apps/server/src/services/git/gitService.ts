@@ -1,5 +1,5 @@
 import simpleGit, { type SimpleGit, type LogResult } from 'simple-git';
-import { existsSync, mkdirSync, rmSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, readdirSync, unlinkSync, renameSync } from 'fs';
 import { join } from 'path';
 import type { GitRepoConfig, GitCommit, GitStatus, GitSyncResult, GitDiff, GitFileChange } from '@datamaster/shared';
 
@@ -26,8 +26,25 @@ export class GitService {
     return parsed.toString();
   }
 
-  private async cloneRepo(authUrl: string, localDir: string, shallow?: boolean): Promise<void> {
-    const opts = shallow ? ['--depth', '1', '--single-branch'] : [];
+  private async cloneRepo(authUrl: string, localDir: string, cfg: { shallow?: boolean; branch?: string; sparsePatterns?: string[] }): Promise<void> {
+    const { shallow, branch, sparsePatterns } = cfg;
+
+    if (sparsePatterns && sparsePatterns.length > 0) {
+      const opts: string[] = ['clone', '--filter=blob:none', '--no-checkout', '--single-branch'];
+      if (shallow) opts.push('--depth', '1');
+      if (branch) opts.push('--branch', branch);
+      opts.push(authUrl, localDir);
+      await simpleGit().raw(opts);
+
+      const git = simpleGit(localDir);
+      await git.raw(['sparse-checkout', 'set', '--no-cone', ...sparsePatterns]);
+      await git.raw(['checkout', branch ?? 'HEAD']);
+      return;
+    }
+
+    const opts: string[] = [];
+    if (shallow) opts.push('--depth', '1', '--single-branch');
+    if (branch) opts.push('--branch', branch);
     await simpleGit().clone(authUrl, localDir, opts);
   }
 
@@ -42,9 +59,9 @@ export class GitService {
       if (isRepo) {
         const healthy = await this.isRepoHealthy(cfg.localDir);
         if (!healthy) {
-          rmSync(cfg.localDir, { recursive: true, force: true });
+          this.nukeDir(cfg.localDir);
           mkdirSync(cfg.localDir, { recursive: true });
-          await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+          await this.cloneRepo(authUrl, cfg.localDir, cfg);
           this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
           return { repoId, success: true, message: 'Re-cloned (previous repo was corrupted)' };
         }
@@ -52,15 +69,16 @@ export class GitService {
 
       if (!isRepo) {
         mkdirSync(cfg.localDir, { recursive: true });
-        await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+        await this.cloneRepo(authUrl, cfg.localDir, cfg);
         this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
         return { repoId, success: true, message: `Cloned successfully${cfg.shallow ? ' (shallow)' : ''}` };
       }
 
       const { git } = this.getRepo(repoId);
-      if (cfg.shallow) {
-        await git.fetch(['--depth', '1']);
-        await git.reset(['--hard', 'origin/HEAD']);
+      if (cfg.shallow || cfg.sparsePatterns?.length) {
+        const branch = cfg.branch ?? (await git.revparse(['--abbrev-ref', 'HEAD']));
+        await git.fetch(['--depth', '1', 'origin', branch]);
+        await git.reset(['--hard', `origin/${branch}`]);
         return { repoId, success: true, message: 'Updated (shallow pull)' };
       }
 
@@ -77,7 +95,8 @@ export class GitService {
 
       const shouldNukeAndReclone =
         msg.includes('cannot lock ref') || msg.includes('.lock') ||
-        msg.includes('spawn') || msg.includes('broken') || msg.includes('Aborted');
+        msg.includes('spawn') || msg.includes('broken') || msg.includes('Aborted') ||
+        msg.includes('ambiguous argument');
 
       if (shouldNukeAndReclone) {
         // Try lock cleanup first for lock-related errors
@@ -87,9 +106,10 @@ export class GitService {
             const { git } = this.getRepo(repoId);
             await git.raw(['gc', '--prune=now']);
             await git.raw(['remote', 'prune', 'origin']);
-            if (cfg.shallow) {
-              await git.fetch(['--depth', '1']);
-              await git.reset(['--hard', 'origin/HEAD']);
+            if (cfg.shallow || cfg.sparsePatterns?.length) {
+              const branch = cfg.branch ?? (await git.revparse(['--abbrev-ref', 'HEAD']));
+              await git.fetch(['--depth', '1', 'origin', branch]);
+              await git.reset(['--hard', `origin/${branch}`]);
             } else {
               await git.fetch(['--prune']);
               const status = await git.status();
@@ -100,9 +120,9 @@ export class GitService {
         }
 
         try {
-          rmSync(cfg.localDir, { recursive: true, force: true });
+          this.nukeDir(cfg.localDir);
           mkdirSync(cfg.localDir, { recursive: true });
-          await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+          await this.cloneRepo(authUrl, cfg.localDir, cfg);
           this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
           return { repoId, success: true, message: `Re-cloned${cfg.shallow ? ' (shallow)' : ''} after error` };
         } catch (retryErr) {
@@ -146,6 +166,16 @@ export class GitService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private nukeDir(dir: string): void {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      const trash = `${dir}.__trash_${Date.now()}`;
+      try { renameSync(dir, trash); } catch { /* ignore */ }
+      try { rmSync(trash, { recursive: true, force: true }); } catch { /* async cleanup later */ }
     }
   }
 

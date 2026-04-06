@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
+import { ToastContainer } from './components/Toast';
 import { useAutoLoad } from './hooks/useAutoLoad';
 
 const EditorPage = lazy(() => import('./pages/editor/EditorPage'));
@@ -38,6 +39,7 @@ export default function App() {
   return (
     <HashRouter>
       <AppRoutes />
+      <ToastContainer />
     </HashRouter>
   );
 }

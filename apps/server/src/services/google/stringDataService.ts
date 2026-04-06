@@ -123,6 +123,20 @@ export function getStringByKey(key: string): StringEntry | undefined {
   return cache?.allEntries.find((e) => e.key === key);
 }
 
+/** Fast O(1) lookup map for all string keys */
+export function getKeyMap(): Map<string, StringEntry> {
+  if (!cache) return new Map();
+  const map = new Map<string, StringEntry>();
+  for (const entry of cache.allEntries) {
+    map.set(entry.key, entry);
+  }
+  return map;
+}
+
+export function getLanguages(): string[] {
+  return cache?.languages ?? [];
+}
+
 export function getStringStats(): {
   totalEntries: number;
   sheets: { name: string; count: number }[];

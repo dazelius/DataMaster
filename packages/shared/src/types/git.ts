@@ -6,6 +6,10 @@ export interface GitRepoConfig {
   label: string;
   /** Use shallow clone (--depth 1) to save disk space and time */
   shallow?: boolean;
+  /** Branch to clone/track (default: repo default branch) */
+  branch?: string;
+  /** Sparse-checkout patterns — only these file globs are materialized on disk */
+  sparsePatterns?: string[];
 }
 
 export interface GitCommit {

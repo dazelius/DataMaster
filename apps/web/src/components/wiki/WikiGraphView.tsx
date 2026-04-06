@@ -38,6 +38,7 @@ interface Props {
 /* ── Category Colors ─────────────────────────────── */
 
 const CATEGORY_COLORS: Record<string, { fill: string; glow: string }> = {
+  _policies:   { fill: '#f472b6', glow: '#f472b6' },
   entities:    { fill: '#c084fc', glow: '#c084fc' },
   concepts:    { fill: '#60a5fa', glow: '#60a5fa' },
   analysis:    { fill: '#34d399', glow: '#34d399' },
@@ -109,11 +110,18 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
   const edgesRef = useRef<GraphEdge[]>([]);
   const hasZoomedToFit = useRef(false);
 
-  const zoomToFit = useCallback((padding = 60) => {
-    const arr = nodesRef.current;
-    if (arr.length === 0) return;
+  const focusedNeighborsRef = useRef<Set<string>>(new Set());
+
+  const zoomToFit = useCallback((padding = 60, filterIds?: Set<string>) => {
+    const allNodes = nodesRef.current;
+    if (allNodes.length === 0) return;
     const { w, h } = dimensionsRef.current;
     if (w < 10 || h < 10) return;
+
+    const arr = filterIds && filterIds.size > 0
+      ? allNodes.filter((n) => filterIds.has(n.id))
+      : allNodes;
+    if (arr.length === 0) return;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const n of arr) {
@@ -166,7 +174,8 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
           if (nodesRef.current.length > 0) {
-            zoomToFit(compact ? 20 : 40);
+            const fitSet = compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
+            zoomToFit(compact ? 20 : 40, fitSet);
           }
         }, 50);
       }
@@ -182,7 +191,10 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
         if (mw > 10 && mh > 10) {
           dimensionsRef.current = { w: mw, h: mh };
           setDimensions({ w: mw, h: mh });
-          if (nodesRef.current.length > 0) zoomToFit(compact ? 20 : 40);
+          if (nodesRef.current.length > 0) {
+            const fitSet = compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
+            zoomToFit(compact ? 20 : 40, fitSet);
+          }
         }
       }, ms),
     );
@@ -229,6 +241,7 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
       });
     }
 
+    focusedNeighborsRef.current = neighbors;
     return { nodes: gNodes, edges: gEdges, focusedNeighbors: neighbors, neighborEdges: nEdges };
   }, [graphData, focusedPage]);
 
@@ -267,10 +280,11 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
 
     hasZoomedToFit.current = false;
 
+    const getFitSet = () => compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
     const fitTimers = [
-      setTimeout(() => zoomToFit(compact ? 20 : 40), 800),
-      setTimeout(() => zoomToFit(compact ? 20 : 40), 2000),
-      setTimeout(() => zoomToFit(compact ? 20 : 40), 4000),
+      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 800),
+      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 2000),
+      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 4000),
     ];
 
     simRef.current = sim;

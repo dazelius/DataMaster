@@ -61,6 +61,7 @@ async function streamGitSync(syncStore: ReturnType<typeof useSyncStore.getState>
               syncStore.setRepoStatus(parsed.repoId, 'loading_data', '데이터 로딩 중...');
               syncStore.setPhase('loading_data');
             } else if (parsed.phase === 'data_loaded') {
+              syncStore.setRepoStatus(parsed.repoId, 'done', '데이터 로딩 완료');
               syncStore.setPhase('data_loaded');
             }
             break;

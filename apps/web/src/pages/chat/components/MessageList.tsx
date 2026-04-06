@@ -1,10 +1,11 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import type { ChatMessage, ToolCall } from '@datamaster/shared';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate } from 'react-router-dom';
 import { MessageBubble } from './MessageBubble';
 import { ToolProgressBar } from './ToolProgressBar';
+import type { StreamSegment } from '../../../stores/chatStore';
 
 function processWikilinks(text: string): string {
   return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, label) => {
@@ -19,10 +20,11 @@ interface MessageListProps {
   activeTools: ToolCall[];
   toolHistory: ToolCall[];
   iteration: number;
+  streamingSegments: StreamSegment[];
   onSuggest?: (message: string) => void;
 }
 
-export function MessageList({ messages, streamingText, isStreaming, activeTools, toolHistory, iteration, onSuggest }: MessageListProps) {
+export function MessageList({ messages, streamingText, isStreaming, activeTools, toolHistory, iteration, streamingSegments, onSuggest }: MessageListProps) {
   const navigate = useNavigate();
   const endRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -46,7 +48,7 @@ export function MessageList({ messages, streamingText, isStreaming, activeTools,
     if (!userScrolledUpRef.current) {
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, streamingText, activeTools]);
+  }, [messages, streamingSegments, activeTools]);
 
   useEffect(() => {
     userScrolledUpRef.current = false;
@@ -54,7 +56,16 @@ export function MessageList({ messages, streamingText, isStreaming, activeTools,
   }, [messages.length]);
 
   const hasTools = activeTools.length > 0 || toolHistory.length > 0;
-  const showThinking = isStreaming && !streamingText && !hasTools;
+  const showThinking = isStreaming && !streamingText && !hasTools && streamingSegments.length <= 1;
+
+  const isLastTextSegmentEmpty = useMemo(() => {
+    const last = streamingSegments[streamingSegments.length - 1];
+    return !last || (last.type === 'text' && !last.content.trim());
+  }, [streamingSegments]);
+
+  const hasRunningTools = activeTools.some((t) => t.status === 'running' || t.status === 'generating');
+  const allToolsDone = activeTools.length > 0 && !hasRunningTools;
+  const showIterationThinking = isStreaming && allToolsDone && isLastTextSegmentEmpty;
 
   return (
     <div ref={scrollContainerRef} className="h-full overflow-y-auto scroll-smooth">
@@ -64,58 +75,84 @@ export function MessageList({ messages, streamingText, isStreaming, activeTools,
         <MessageBubble key={msg.id} message={msg} />
       ))}
 
-      {/* Streaming text — always visible when present, even during tool execution */}
-      {isStreaming && streamingText && (
-        <div className="flex gap-3 px-4 md:px-6 py-3">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-accent)] text-[10px] font-bold text-white">
-            D
-          </div>
-          <div className="max-w-[85%] md:max-w-[70%] rounded-2xl rounded-bl-md bg-[var(--color-surface-2)] px-4 py-2.5 text-[13px] leading-relaxed text-[var(--color-text-primary)]">
-            <div className="chat-markdown break-words">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  a: ({ href, children }) => {
-                    if (href?.startsWith('#/wiki/')) {
-                      const target = href.replace('#/wiki/', '');
-                      return (
-                        <button
-                          onClick={() => navigate(`/wiki/${target}`)}
-                          className="text-[var(--color-accent)] hover:underline font-medium inline"
-                        >
-                          {children}
-                        </button>
-                      );
-                    }
-                    return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>;
-                  },
-                }}
-              >
-                {processWikilinks(streamingText)}
-              </ReactMarkdown>
-            </div>
-            {/* Blinking cursor only when not in tool execution phase */}
-            {!activeTools.some((t) => t.status === 'running') && (
-              <span className="inline-block h-4 w-0.5 animate-pulse bg-[var(--color-accent)] ml-0.5" />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Tool progress — shown below streaming text */}
-      {isStreaming && hasTools && (
-        <ToolProgressBar tools={activeTools} toolHistory={toolHistory} iteration={iteration} />
-      )}
+      {/* Segmented streaming: text and tools interleaved chronologically */}
+      {isStreaming && streamingSegments.map((seg, idx) => {
+        if (seg.type === 'text' && seg.content.trim()) {
+          const isLast = idx === streamingSegments.length - 1;
+          return (
+            <StreamingTextBubble
+              key={`seg-text-${idx}`}
+              text={seg.content}
+              showCursor={isLast && !hasRunningTools}
+              navigate={navigate}
+            />
+          );
+        }
+        if (seg.type === 'tools' && seg.tools.length > 0) {
+          const isCurrentToolGroup = idx === streamingSegments.length - 1 || idx === streamingSegments.length - 2;
+          const allDone = seg.tools.every((t) => t.status === 'done' || t.status === 'error');
+          return (
+            <ToolProgressBar
+              key={`seg-tools-${idx}`}
+              tools={seg.tools}
+              collapsed={allDone && !isCurrentToolGroup}
+            />
+          );
+        }
+        return null;
+      })}
 
       {/* Thinking indicator — only when no text and no tools yet */}
       {showThinking && <ThinkingIndicator />}
 
       {/* Thinking between iterations — tools done, waiting for next AI response */}
-      {isStreaming && !showThinking && hasTools && activeTools.every((t) => t.status !== 'running') && activeTools.length > 0 && (
-        <IterationThinkingIndicator iteration={iteration} />
-      )}
+      {showIterationThinking && <IterationThinkingIndicator iteration={iteration} />}
 
       <div ref={endRef} className="h-4" />
+    </div>
+  );
+}
+
+function StreamingTextBubble({ text, showCursor, navigate }: { text: string; showCursor: boolean; navigate: ReturnType<typeof useNavigate> }) {
+  return (
+    <div className="flex gap-3 px-4 md:px-6 py-3 animate-in fade-in duration-200">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-accent)] text-[10px] font-bold text-white">
+        D
+      </div>
+      <div className="max-w-[85%] md:max-w-[70%] rounded-2xl rounded-bl-md bg-[var(--color-surface-2)] px-4 py-2.5 text-[13px] leading-relaxed text-[var(--color-text-primary)]">
+        <div className="chat-markdown break-words">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ href, children }) => {
+                if (href?.startsWith('#/wiki/')) {
+                  const target = href.replace('#/wiki/', '');
+                  return (
+                    <button
+                      onClick={() => navigate(`/wiki/${target}`)}
+                      className="text-[var(--color-accent)] hover:underline font-medium inline"
+                    >
+                      {children}
+                    </button>
+                  );
+                }
+                return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>;
+              },
+              img: ({ src, alt }) => (
+                <span className="inline-block my-2">
+                  <img src={src} alt={alt ?? ''} loading="lazy" className="max-w-full rounded-lg border border-[var(--color-border)] shadow-sm" style={{ maxHeight: '240px' }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  {alt && <span className="block text-xs text-[var(--color-text-muted)] mt-1">{alt}</span>}
+                </span>
+              ),
+            }}
+          >
+            {processWikilinks(text)}
+          </ReactMarkdown>
+        </div>
+        {showCursor && (
+          <span className="inline-block h-4 w-0.5 animate-pulse bg-[var(--color-accent)] ml-0.5" />
+        )}
+      </div>
     </div>
   );
 }

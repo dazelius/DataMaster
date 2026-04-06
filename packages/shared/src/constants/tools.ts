@@ -2,7 +2,7 @@ export interface ToolMeta {
   name: string;
   label: string;
   icon: string;
-  category: 'data' | 'git' | 'code' | 'integration' | 'artifact' | 'knowledge' | 'asset';
+  category: 'data' | 'git' | 'code' | 'integration' | 'knowledge' | 'asset';
 }
 
 export const TOOL_REGISTRY: ToolMeta[] = [
@@ -10,9 +10,6 @@ export const TOOL_REGISTRY: ToolMeta[] = [
   { name: 'show_table_schema', label: '테이블 구조', icon: '📋', category: 'data' },
   { name: 'query_git_history', label: 'Git 이력', icon: '📂', category: 'git' },
   { name: 'show_revision_diff', label: '커밋 비교', icon: '🔀', category: 'git' },
-  { name: 'create_artifact', label: '문서 생성', icon: '📄', category: 'artifact' },
-  { name: 'patch_artifact', label: '문서 수정', icon: '✏️', category: 'artifact' },
-  { name: 'read_guide', label: '가이드 참조', icon: '📖', category: 'code' },
   { name: 'search_code', label: '코드 검색', icon: '💻', category: 'code' },
   { name: 'read_code_file', label: '코드 읽기', icon: '💻', category: 'code' },
   { name: 'search_jira', label: 'Jira 검색', icon: '🎫', category: 'integration' },

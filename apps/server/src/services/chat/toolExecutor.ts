@@ -136,56 +136,6 @@ registerTool({
   },
 });
 
-registerTool({
-  name: 'create_artifact',
-  description: 'Create an HTML artifact/report document.',
-  inputSchema: z.object({ title: z.string(), html: z.string() }),
-  claudeSchema: {
-    type: 'object',
-    properties: {
-      title: { type: 'string', description: 'Artifact title' },
-      html: { type: 'string', description: 'Full HTML content' },
-    },
-    required: ['title', 'html'],
-  },
-  async execute(input) {
-    const { title, html } = input as { title: string; html: string };
-    return JSON.stringify({ status: 'created', title, htmlLength: html.length });
-  },
-});
-
-registerTool({
-  name: 'patch_artifact',
-  description: 'Partially modify an existing HTML artifact.',
-  inputSchema: z.object({ id: z.string(), patch: z.string() }),
-  claudeSchema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string', description: 'Artifact ID' },
-      patch: { type: 'string', description: 'HTML patch content' },
-    },
-    required: ['id', 'patch'],
-  },
-  async execute(input) {
-    const { id } = input as { id: string };
-    return JSON.stringify({ status: 'patched', id });
-  },
-});
-
-registerTool({
-  name: 'read_guide',
-  description: 'Read a code or database guide document.',
-  inputSchema: z.object({ guideId: z.string() }),
-  claudeSchema: {
-    type: 'object',
-    properties: { guideId: { type: 'string', description: 'Guide identifier' } },
-    required: ['guideId'],
-  },
-  async execute(input) {
-    const { guideId } = input as { guideId: string };
-    return JSON.stringify({ guideId, content: 'Guide content placeholder' });
-  },
-});
 
 // --- Wiki Tools ---
 
@@ -246,11 +196,11 @@ registerTool({
 
 registerTool({
   name: 'wiki_write',
-  description: 'Create or update a wiki page to PERSIST knowledge. ALWAYS include sources array to track where information came from. Use [[wikilinks]] for cross-references and ![[page]] for Obsidian embeds. Categories: entities/ (game entities), concepts/ (mechanics/formulas), analysis/ (findings/comparisons), guides/ (how-to).',
+  description: 'Create or update a wiki page to PERSIST knowledge. IMPORTANT: Content is streamed via <<<>>> markers in your text message — set content to empty string "". ALWAYS include sources array. Use [[wikilinks]] for cross-references and ![[page]] for Obsidian embeds. Categories: entities/ (game entities), concepts/ (mechanics/formulas), analysis/ (findings/comparisons), guides/ (how-to).',
   inputSchema: z.object({
     path: z.string(),
     title: z.string(),
-    content: z.string(),
+    content: z.string().optional().default(''),
     tags: z.array(z.string()).optional(),
     sources: z.array(z.string()).optional(),
     confidence: z.enum(['low', 'medium', 'high']).optional(),
@@ -260,12 +210,12 @@ registerTool({
     properties: {
       path: { type: 'string', description: 'Page path (e.g. "entities/character")' },
       title: { type: 'string', description: 'Page title' },
-      content: { type: 'string', description: 'Markdown content with [[wikilinks]] and ![[embeds]]' },
+      content: { type: 'string', description: 'Leave empty — content is auto-captured from <<<>>> markers in your text message' },
       tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
       sources: { type: 'array', items: { type: 'string' }, description: 'REQUIRED. Information sources (e.g. "table:Character", "jira:AEGIS-123", "confluence:전술공방전 (id:12345)", "git:abc1234", "user:유저설명")' },
       confidence: { type: 'string', enum: ['low', 'medium', 'high'], description: 'high=DB/공식문서 확인, medium=추론, low=불확실' },
     },
-    required: ['path', 'title', 'content'],
+    required: ['path', 'title'],
   },
   async execute(input) {
     const { path, title, content, tags, sources, confidence } = input as {
@@ -362,6 +312,186 @@ registerTool({
       return JSON.stringify({ ...result, source: 'StringData (Google Sheets)' });
     } catch (err) {
       return `SQL Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  },
+});
+
+// --- Image / Asset Tools ---
+
+registerTool({
+  name: 'search_images',
+  description: 'Search for image assets (PNG) in the game code repository by keyword. File paths and names are matched against the query. Use to find character portraits, icons, UI elements, skill effects, etc. Returns image URLs that can be embedded in wiki pages with markdown ![alt](/api/assets/code/path).',
+  inputSchema: z.object({
+    query: z.string(),
+    limit: z.number().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search keywords (e.g. "kaya", "icon skill", "ui button"). Matches against file paths.' },
+      limit: { type: 'number', description: 'Max results (default 20)' },
+    },
+    required: ['query'],
+  },
+  async execute(input) {
+    const { query, limit } = input as { query: string; limit?: number };
+    const { resolve } = await import('path');
+    const { config } = await import('../../config.js');
+    const { readdir } = await import('fs/promises');
+    const { join, extname } = await import('path');
+
+    const codeBase = resolve(config.GIT_CLONE_BASE_DIR, 'code');
+    const maxResults = Math.min(limit ?? 20, 50);
+    const keywords = query.toLowerCase().split(/[\s_\-/\\]+/).filter(Boolean);
+
+    if (keywords.length === 0) return JSON.stringify({ images: [], total: 0 });
+
+    const images: { path: string; name: string; url: string }[] = [];
+
+    async function walk(dir: string, rel: string) {
+      let entries;
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (images.length >= maxResults) return;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (entry.name === '.git' || entry.name === 'node_modules') continue;
+          await walk(join(dir, entry.name), childRel);
+        } else {
+          const ext = extname(entry.name).toLowerCase();
+          if (ext !== '.png') continue;
+          const lower = childRel.toLowerCase();
+          if (keywords.every((kw) => lower.includes(kw))) {
+            images.push({ path: childRel, name: entry.name, url: `/api/assets/code/${childRel}` });
+          }
+        }
+      }
+    }
+
+    await walk(codeBase, '');
+    return JSON.stringify({ query, images, total: images.length });
+  },
+});
+
+// --- Code Search / Read Tools ---
+
+registerTool({
+  name: 'search_code',
+  description: 'Search for code files (C#, Lua, etc.) in the game code repository by keyword. Matches file names and paths. Returns matching file paths that can be read with read_code_file. Use to find game logic implementations, class definitions, scriptable objects, etc.',
+  inputSchema: z.object({
+    query: z.string(),
+    extension: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search keywords (e.g. "TacticalShield", "DamageCalc", "PlayerController"). Matches against file paths.' },
+      extension: { type: 'string', description: 'File extension filter (e.g. ".cs", ".lua"). Default: all code files.' },
+      limit: { type: 'number', description: 'Max results (default 30)' },
+    },
+    required: ['query'],
+  },
+  async execute(input) {
+    const { query, extension, limit } = input as { query: string; extension?: string; limit?: number };
+    const { resolve, join, extname } = await import('path');
+    const { config } = await import('../../config.js');
+    const { readdir } = await import('fs/promises');
+
+    const codeBase = resolve(config.GIT_CLONE_BASE_DIR, 'code');
+    const maxResults = Math.min(limit ?? 30, 100);
+    const keywords = query.toLowerCase().split(/[\s_\-/\\]+/).filter(Boolean);
+    const codeExts = new Set(['.cs', '.lua', '.json', '.xml', '.yaml', '.yml', '.txt', '.cfg', '.ini', '.shader']);
+
+    if (keywords.length === 0) return JSON.stringify({ files: [], total: 0 });
+
+    const files: { path: string; name: string; ext: string }[] = [];
+
+    async function walk(dir: string, rel: string) {
+      let entries;
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (files.length >= maxResults) return;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'Library') continue;
+          await walk(join(dir, entry.name), childRel);
+        } else {
+          const ext = extname(entry.name).toLowerCase();
+          if (extension && ext !== extension.toLowerCase()) continue;
+          if (!extension && !codeExts.has(ext)) continue;
+          const lower = childRel.toLowerCase();
+          if (keywords.every((kw) => lower.includes(kw))) {
+            files.push({ path: childRel, name: entry.name, ext });
+          }
+        }
+      }
+    }
+
+    await walk(codeBase, '');
+    return JSON.stringify({ query, files, total: files.length });
+  },
+});
+
+registerTool({
+  name: 'read_code_file',
+  description: 'Read the contents of a specific code file from the game code repository. Use after search_code to inspect implementation details. Supports C#, Lua, JSON, XML, and other text files. Returns file content (truncated to 15KB for large files).',
+  inputSchema: z.object({
+    path: z.string(),
+    startLine: z.number().optional(),
+    endLine: z.number().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path relative to code repo root (as returned by search_code)' },
+      startLine: { type: 'number', description: 'Start reading from this line (1-based, optional)' },
+      endLine: { type: 'number', description: 'Stop reading at this line (inclusive, optional)' },
+    },
+    required: ['path'],
+  },
+  async execute(input) {
+    const { path: filePath, startLine, endLine } = input as { path: string; startLine?: number; endLine?: number };
+    const { resolve, extname } = await import('path');
+    const { config } = await import('../../config.js');
+    const { readFile } = await import('fs/promises');
+
+    const fullPath = resolve(config.GIT_CLONE_BASE_DIR, 'code', filePath);
+
+    if (!fullPath.startsWith(resolve(config.GIT_CLONE_BASE_DIR, 'code'))) {
+      return 'Error: path traversal not allowed';
+    }
+
+    try {
+      const raw = await readFile(fullPath, 'utf-8');
+      const ext = extname(filePath).toLowerCase();
+      let lines = raw.split('\n');
+      const totalLines = lines.length;
+
+      if (startLine || endLine) {
+        const start = Math.max((startLine ?? 1) - 1, 0);
+        const end = endLine ? Math.min(endLine, totalLines) : totalLines;
+        lines = lines.slice(start, end);
+      }
+
+      let content = lines.join('\n');
+      const MAX_SIZE = 15_000;
+      let truncated = false;
+      if (content.length > MAX_SIZE) {
+        content = content.substring(0, MAX_SIZE);
+        truncated = true;
+      }
+
+      return JSON.stringify({
+        path: filePath,
+        extension: ext,
+        totalLines,
+        range: startLine || endLine ? { start: startLine ?? 1, end: endLine ?? totalLines } : null,
+        truncated,
+        content,
+      });
+    } catch (err) {
+      return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
     }
   },
 });

@@ -5,17 +5,25 @@ export class SSEWriter {
   private closed = false;
 
   constructor(private reply: FastifyReply) {
+    const origin = reply.request.headers.origin;
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...(origin && {
+        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Credentials': 'true',
+      }),
     });
+    reply.raw.socket?.setNoDelay(true);
   }
 
   send(event: SSEEvent): void {
     if (this.closed) return;
-    this.reply.raw.write(`event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`);
+    const raw = this.reply.raw;
+    raw.write(`event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`);
+    if (typeof (raw as any).flush === 'function') (raw as any).flush();
   }
 
   heartbeat(): void {

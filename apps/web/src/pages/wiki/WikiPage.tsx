@@ -43,6 +43,7 @@ interface BacklinkInfo {
 /* ── Constants ─────────────────────────────────────── */
 
 const CATEGORIES = [
+  { id: '_policies', label: 'Policies', icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z' },
   { id: 'entities', label: 'Entities', icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10' },
   { id: 'concepts', label: 'Concepts', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
   { id: 'analysis', label: 'Analysis', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
@@ -70,6 +71,7 @@ export default function WikiPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [backlinks, setBacklinks] = useState<BacklinkInfo[]>([]);
   const [showRightPanel, setShowRightPanel] = useState(true);
+  const [showFullGraph, setShowFullGraph] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
 
   const loadPages = useCallback(async () => {
@@ -136,7 +138,7 @@ export default function WikiPage() {
         e.preventDefault();
         setQuickSwitcherOpen((v) => !v);
       }
-      if (e.key === 'Escape') setQuickSwitcherOpen(false);
+      if (e.key === 'Escape') { setQuickSwitcherOpen(false); setShowFullGraph(false); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -283,11 +285,54 @@ export default function WikiPage() {
               </div>
             )}
           </div>
+
+        {/* Graph toggle button */}
+        <div className="flex-shrink-0 border-t border-[var(--color-border-subtle)] p-2">
+          <button
+            onClick={() => { setShowFullGraph((v) => !v); setSidebarOpen(false); }}
+            className={`w-full flex items-center gap-2 rounded-[var(--radius-md)] px-3 py-2.5 text-xs font-medium transition-colors ${
+              showFullGraph
+                ? 'bg-[var(--color-accent-subtle)] text-[var(--color-accent)]'
+                : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]'
+            }`}
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+            </svg>
+            Knowledge Graph
+            {showFullGraph && (
+              <span className="ml-auto text-[10px] opacity-60">ESC</span>
+            )}
+          </button>
+        </div>
       </aside>
 
       {/* Content area */}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
-        {loading ? (
+        {showFullGraph ? (
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-[var(--color-accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+                </svg>
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">Knowledge Graph</span>
+                <span className="text-[10px] text-[var(--color-text-muted)]">{pages.length} pages</span>
+              </div>
+              <button
+                onClick={() => setShowFullGraph(false)}
+                className="btn-ghost rounded-[var(--radius-sm)] p-1.5"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 relative">
+              <WikiGraphView onPageClick={(path) => { navigateToPage(path); setShowFullGraph(false); }} />
+            </div>
+          </div>
+        ) : loading ? (
           <div className="flex flex-1 items-center justify-center">
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--color-border)] border-t-[var(--color-accent)]" />
           </div>
@@ -640,6 +685,19 @@ function WikiMarkdown({ content, navigateToPage }: { content: string; navigateTo
               ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-[14px] text-[var(--color-text-secondary)]">{children}</ul>,
               ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-[14px] text-[var(--color-text-secondary)]">{children}</ol>,
               blockquote: ({ children }) => <blockquote className="border-l-2 border-[var(--color-accent)] pl-4 my-4 text-[var(--color-text-muted)] italic">{children}</blockquote>,
+              img: ({ src, alt }) => (
+                <span className="inline-block my-3">
+                  <img
+                    src={src}
+                    alt={alt ?? ''}
+                    loading="lazy"
+                    className="max-w-full rounded-lg border border-[var(--color-border)] shadow-sm"
+                    style={{ maxHeight: '320px' }}
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  {alt && <span className="block text-xs text-[var(--color-text-muted)] mt-1">{alt}</span>}
+                </span>
+              ),
             }}
           >
             {processWikilinks(part.value)}
@@ -772,7 +830,7 @@ function WikiWelcome({ totalPages, onNavigate, onPageClick }: { totalPages: numb
                 onClick={() => onNavigate(cat)}
                 className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 py-2 text-xs hover:bg-[var(--color-surface-2)] transition-colors"
               >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: { entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[cat] ?? '#94a3b8' }} />
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: { _policies: '#f472b6', entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[cat] ?? '#94a3b8' }} />
                 <span className="text-[var(--color-text-secondary)]">{cat}</span>
                 <span className="min-w-[20px] rounded-full bg-[var(--color-surface-3)] px-1.5 py-0.5 text-center text-[10px] font-bold text-[var(--color-text-muted)]">{count}</span>
               </button>
@@ -811,7 +869,7 @@ function WikiWelcome({ totalPages, onNavigate, onPageClick }: { totalPages: numb
                   delete: { label: '삭제', color: 'bg-red-500', textColor: 'text-red-400', bgColor: 'bg-red-500/10', icon: 'M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0' },
                 }[rp.action] ?? { label: rp.action, color: 'bg-zinc-500', textColor: 'text-zinc-400', bgColor: 'bg-zinc-500/10', icon: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z' };
 
-                const catColor = { entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[rp.category] ?? '#94a3b8';
+                const catColor = { _policies: '#f472b6', entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[rp.category] ?? '#94a3b8';
 
                 const isToday = rp.agoMs < 86_400_000;
 
@@ -1002,7 +1060,7 @@ function QuickSwitcher({ pages, onSelect, onClose }: { pages: WikiPageMeta[]; on
                   }`}
                 >
                   <span className="h-2 w-2 rounded-full flex-shrink-0" style={{
-                    backgroundColor: { entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[cat] ?? '#94a3b8',
+                    backgroundColor: { _policies: '#f472b6', entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[cat] ?? '#94a3b8',
                   }} />
                   <div className="flex-1 min-w-0">
                     <div className={`text-sm truncate ${idx === selectedIdx ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-primary)]'}`}>

@@ -3,7 +3,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { config } from '../config.js';
 import { gitService } from '../services/git/gitService.js';
 import { loadGameData, invalidateCache } from '../services/data/dataService.js';
-import { initServerQueryEngine } from '../services/data/serverQueryEngine.js';
+import { initServerQueryEngine, registerStringDataTables } from '../services/data/serverQueryEngine.js';
+import * as googleSheets from '../services/google/googleSheetsService.js';
+import * as stringDataService from '../services/google/stringDataService.js';
 
 function sseWrite(reply: FastifyReply, event: string, data: Record<string, unknown>) {
   reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -39,7 +41,8 @@ export async function gitRoutes(app: FastifyInstance) {
       return;
     }
 
-    sseWrite(reply, 'start', { repos: repoIds.map((id) => ({ id, label: id })) });
+    const allRepoIds = [...repoIds, ...(googleSheets.isConfigured() ? ['localize'] : [])];
+    sseWrite(reply, 'start', { repos: allRepoIds.map((id) => ({ id, label: id })) });
 
     const allResults = [];
 
@@ -61,6 +64,27 @@ export async function gitRoutes(app: FastifyInstance) {
         sseWrite(reply, 'phase', { repoId: id, phase: 'loading_data' });
         await reloadDataAfterSync(app.log);
         sseWrite(reply, 'phase', { repoId: id, phase: 'data_loaded' });
+      }
+    }
+
+    // StringData (Localization) sync
+    if (googleSheets.isConfigured() && !reply.raw.destroyed) {
+      sseWrite(reply, 'repo_start', { repoId: 'localize' });
+      try {
+        await stringDataService.loadStringData();
+        registerStringDataTables();
+        const stats = stringDataService.getStringStats();
+        sseWrite(reply, 'repo_done', {
+          repoId: 'localize',
+          success: true,
+          message: `${stats.totalEntries}개 항목, ${stats.languages.join('/')}`,
+        });
+      } catch (err) {
+        sseWrite(reply, 'repo_done', {
+          repoId: 'localize',
+          success: false,
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

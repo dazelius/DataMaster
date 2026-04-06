@@ -5,7 +5,7 @@ import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 
 export default function ChatPage() {
-  const { messages, streamingText, isStreaming, activeTools, toolHistory, iteration } = useChatStore();
+  const { messages, streamingText, isStreaming, activeTools, toolHistory, iteration, streamingSegments } = useChatStore();
   const { sendMessage, cancel } = useChatStream();
 
   const handleSend = useCallback(
@@ -91,6 +91,7 @@ export default function ChatPage() {
           activeTools={activeTools}
           toolHistory={toolHistory}
           iteration={iteration}
+          streamingSegments={streamingSegments}
           onSuggest={handleSend}
         />
       </div>

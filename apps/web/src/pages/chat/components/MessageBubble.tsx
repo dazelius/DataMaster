@@ -74,6 +74,19 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                   }
                   return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>;
                 },
+                img: ({ src, alt }) => (
+                  <span className="inline-block my-2">
+                    <img
+                      src={src}
+                      alt={alt ?? ''}
+                      loading="lazy"
+                      className="max-w-full rounded-lg border border-[var(--color-border)] shadow-sm"
+                      style={{ maxHeight: '240px' }}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                    {alt && <span className="block text-xs text-[var(--color-text-muted)] mt-1">{alt}</span>}
+                  </span>
+                ),
               }}
             >
               {processWikilinks(message.content)}
