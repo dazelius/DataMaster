@@ -4,6 +4,8 @@ export interface GitRepoConfig {
   token?: string;
   localDir: string;
   label: string;
+  /** Use shallow clone (--depth 1) to save disk space and time */
+  shallow?: boolean;
 }
 
 export interface GitCommit {

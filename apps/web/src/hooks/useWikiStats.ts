@@ -6,7 +6,7 @@ interface WikiStats {
   recentCount: number;
   categoryCounts: Record<string, number>;
   lastUpdated: string | null;
-  recentPages: { path: string; title: string; updated: string; action: string }[];
+  recentPages: { path: string; title: string; updated: string; action: string; category: string; tags: string[]; confidence: string; agoMs: number; summary: string }[];
 }
 
 const EMPTY: WikiStats = { totalPages: 0, recentCount: 0, categoryCounts: {}, lastUpdated: null, recentPages: [] };

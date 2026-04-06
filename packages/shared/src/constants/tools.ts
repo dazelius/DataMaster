@@ -21,6 +21,13 @@ export const TOOL_REGISTRY: ToolMeta[] = [
   { name: 'get_confluence_page', label: 'Confluence 문서', icon: '📚', category: 'integration' },
   { name: 'save_knowledge', label: '지식 저장', icon: '🧠', category: 'knowledge' },
   { name: 'read_knowledge', label: '지식 읽기', icon: '🧠', category: 'knowledge' },
+  { name: 'wiki_search', label: '위키 검색', icon: '📖', category: 'knowledge' },
+  { name: 'wiki_read', label: '위키 읽기', icon: '📖', category: 'knowledge' },
+  { name: 'wiki_write', label: '위키 작성', icon: '✍️', category: 'knowledge' },
+  { name: 'search_strings', label: '스트링 검색', icon: '🌐', category: 'data' },
+  { name: 'get_string', label: '스트링 조회', icon: '🌐', category: 'data' },
+  { name: 'string_stats', label: '스트링 통계', icon: '🌐', category: 'data' },
+  { name: 'query_string_data', label: '스트링 쿼리', icon: '🌐', category: 'data' },
   { name: 'search_assets', label: '에셋 검색', icon: '🎨', category: 'asset' },
   { name: 'find_resource_image', label: '이미지 찾기', icon: '🖼️', category: 'asset' },
 ];

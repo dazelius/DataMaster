@@ -1,5 +1,6 @@
 import simpleGit, { type SimpleGit, type LogResult } from 'simple-git';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, readdirSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import type { GitRepoConfig, GitCommit, GitStatus, GitSyncResult, GitDiff, GitFileChange } from '@datamaster/shared';
 
 export class GitService {
@@ -25,15 +26,42 @@ export class GitService {
     return parsed.toString();
   }
 
+  private async cloneRepo(authUrl: string, localDir: string, shallow?: boolean): Promise<void> {
+    const opts = shallow ? ['--depth', '1', '--single-branch'] : [];
+    await simpleGit().clone(authUrl, localDir, opts);
+  }
+
   async sync(repoId: string): Promise<GitSyncResult> {
-    const { config: cfg, git } = this.getRepo(repoId);
+    const { config: cfg } = this.getRepo(repoId);
     const authUrl = this.buildAuthUrl(cfg.url, cfg.token);
 
     try {
-      const isRepo = existsSync(`${cfg.localDir}/.git`);
+      const gitDir = `${cfg.localDir}/.git`;
+      const isRepo = existsSync(gitDir);
+
+      if (isRepo) {
+        const healthy = await this.isRepoHealthy(cfg.localDir);
+        if (!healthy) {
+          rmSync(cfg.localDir, { recursive: true, force: true });
+          mkdirSync(cfg.localDir, { recursive: true });
+          await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+          this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
+          return { repoId, success: true, message: 'Re-cloned (previous repo was corrupted)' };
+        }
+      }
+
       if (!isRepo) {
-        await simpleGit().clone(authUrl, cfg.localDir);
-        return { repoId, success: true, message: 'Cloned successfully' };
+        mkdirSync(cfg.localDir, { recursive: true });
+        await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+        this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
+        return { repoId, success: true, message: `Cloned successfully${cfg.shallow ? ' (shallow)' : ''}` };
+      }
+
+      const { git } = this.getRepo(repoId);
+      if (cfg.shallow) {
+        await git.fetch(['--depth', '1']);
+        await git.reset(['--hard', 'origin/HEAD']);
+        return { repoId, success: true, message: 'Updated (shallow pull)' };
       }
 
       await git.fetch();
@@ -46,7 +74,78 @@ export class GitService {
       return { repoId, success: true, message: 'Already up to date' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+
+      const shouldNukeAndReclone =
+        msg.includes('cannot lock ref') || msg.includes('.lock') ||
+        msg.includes('spawn') || msg.includes('broken') || msg.includes('Aborted');
+
+      if (shouldNukeAndReclone) {
+        // Try lock cleanup first for lock-related errors
+        if (msg.includes('cannot lock ref') || msg.includes('.lock')) {
+          try {
+            this.cleanLockFiles(cfg.localDir);
+            const { git } = this.getRepo(repoId);
+            await git.raw(['gc', '--prune=now']);
+            await git.raw(['remote', 'prune', 'origin']);
+            if (cfg.shallow) {
+              await git.fetch(['--depth', '1']);
+              await git.reset(['--hard', 'origin/HEAD']);
+            } else {
+              await git.fetch(['--prune']);
+              const status = await git.status();
+              if (status.behind > 0) await git.pull();
+            }
+            return { repoId, success: true, message: 'Updated (after lock cleanup)' };
+          } catch { /* lock cleanup failed, fall through to re-clone */ }
+        }
+
+        try {
+          rmSync(cfg.localDir, { recursive: true, force: true });
+          mkdirSync(cfg.localDir, { recursive: true });
+          await this.cloneRepo(authUrl, cfg.localDir, cfg.shallow);
+          this.repos.set(repoId, { config: cfg, git: simpleGit(cfg.localDir) });
+          return { repoId, success: true, message: `Re-cloned${cfg.shallow ? ' (shallow)' : ''} after error` };
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          return { repoId, success: false, message: `Re-clone failed: ${retryMsg}` };
+        }
+      }
+
       return { repoId, success: false, message: msg };
+    }
+  }
+
+  private cleanLockFiles(localDir: string): void {
+    const gitDir = join(localDir, '.git');
+    if (!existsSync(gitDir)) return;
+
+    const lockFile = join(gitDir, 'index.lock');
+    if (existsSync(lockFile)) unlinkSync(lockFile);
+
+    const refsDir = join(gitDir, 'refs');
+    if (existsSync(refsDir)) this.removeLockFilesRecursive(refsDir);
+  }
+
+  private removeLockFilesRecursive(dir: string): void {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          this.removeLockFilesRecursive(fullPath);
+        } else if (entry.name.endsWith('.lock')) {
+          unlinkSync(fullPath);
+        }
+      }
+    } catch { /* ignore fs errors */ }
+  }
+
+  private async isRepoHealthy(localDir: string): Promise<boolean> {
+    try {
+      const git = simpleGit(localDir);
+      await git.status();
+      return true;
+    } catch {
+      return false;
     }
   }
 

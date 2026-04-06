@@ -111,6 +111,46 @@ function serializeFrontmatter(fm: WikiFrontmatter): string {
   return lines.join('\n');
 }
 
+/* ── Change Summary Builder ───────────────────────── */
+
+function buildChangeSummary(
+  oldFm: WikiFrontmatter, oldContent: string,
+  newFm: WikiFrontmatter, newContent: string,
+): string {
+  const changes: string[] = [];
+
+  const oldLines = oldContent.trim().split('\n');
+  const newLines = newContent.trim().split('\n');
+  const addedLines = newLines.length - oldLines.length;
+  if (addedLines > 0) changes.push(`+${addedLines}줄`);
+  else if (addedLines < 0) changes.push(`${addedLines}줄`);
+
+  const oldSections = oldContent.split('\n').filter((l) => l.startsWith('#')).map((l) => l.replace(/^#+\s*/, ''));
+  const newSections = newContent.split('\n').filter((l) => l.startsWith('#')).map((l) => l.replace(/^#+\s*/, ''));
+  const addedSections = newSections.filter((s) => !oldSections.includes(s));
+  const removedSections = oldSections.filter((s) => !newSections.includes(s));
+  if (addedSections.length > 0) changes.push(`섹션 추가: ${addedSections.slice(0, 3).join(', ')}`);
+  if (removedSections.length > 0) changes.push(`섹션 제거: ${removedSections.slice(0, 3).join(', ')}`);
+
+  const oldTags = new Set(oldFm.tags ?? []);
+  const newTags = new Set(newFm.tags ?? []);
+  const addedTags = [...newTags].filter((t) => !oldTags.has(t));
+  const removedTags = [...oldTags].filter((t) => !newTags.has(t));
+  if (addedTags.length > 0) changes.push(`태그+: ${addedTags.join(', ')}`);
+  if (removedTags.length > 0) changes.push(`태그-: ${removedTags.join(', ')}`);
+
+  const oldSrc = (oldFm.sources ?? []).length;
+  const newSrc = (newFm.sources ?? []).length;
+  if (newSrc > oldSrc) changes.push(`출처 ${newSrc - oldSrc}개 추가`);
+  else if (newSrc < oldSrc) changes.push(`출처 ${oldSrc - newSrc}개 제거`);
+
+  if (oldFm.confidence !== newFm.confidence && newFm.confidence) {
+    changes.push(`신뢰도: ${oldFm.confidence ?? '없음'} → ${newFm.confidence}`);
+  }
+
+  return changes.length > 0 ? changes.join(', ') : '내용 수정';
+}
+
 /* ── BM25 Search Engine ────────────────────────────── */
 
 function tokenize(text: string): string[] {
@@ -229,19 +269,38 @@ class WikiService {
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
 
     const isNew = !existsSync(fullPath);
+    let changeSummary = '';
+
     if (!frontmatter.created) {
       if (isNew) {
         frontmatter.created = new Date().toISOString().split('T')[0];
       } else {
         const existing = await this.readPage(pagePath);
-        if (existing?.frontmatter.created) frontmatter.created = existing.frontmatter.created;
+        if (existing) {
+          if (existing.frontmatter.created) frontmatter.created = existing.frontmatter.created;
+          changeSummary = buildChangeSummary(existing.frontmatter, existing.content, frontmatter, content);
+        }
       }
+    } else if (!isNew) {
+      const existing = await this.readPage(pagePath);
+      if (existing) {
+        changeSummary = buildChangeSummary(existing.frontmatter, existing.content, frontmatter, content);
+      }
+    }
+
+    if (isNew) {
+      const sections = content.split('\n').filter((l) => l.startsWith('#')).map((l) => l.replace(/^#+\s*/, ''));
+      const wordCount = content.split(/\s+/).filter(Boolean).length;
+      changeSummary = `새 페이지 (${wordCount}자, 섹션: ${sections.slice(0, 4).join(', ') || '없음'})`;
     }
 
     const fm = serializeFrontmatter(frontmatter);
     await writeFile(fullPath, `${fm}\n\n${content.trim()}\n`, 'utf-8');
 
-    await this.appendLog(isNew ? 'create' : 'update', `${pagePath} — ${frontmatter.title}`);
+    const logDetail = changeSummary
+      ? `${pagePath} — ${frontmatter.title} ⟫ ${changeSummary}`
+      : `${pagePath} — ${frontmatter.title}`;
+    await this.appendLog(isNew ? 'create' : 'update', logDetail);
     await this.updateIndex();
   }
 
@@ -418,7 +477,7 @@ class WikiService {
     recentCount: number;
     categoryCounts: Record<string, number>;
     lastUpdated: string | null;
-    recentPages: { path: string; title: string; updated: string; action: string }[];
+    recentPages: { path: string; title: string; updated: string; action: string; category: string; tags: string[]; confidence: string; agoMs: number; summary: string }[];
   }> {
     const pages = await this.listPages();
     const now = Date.now();
@@ -426,17 +485,23 @@ class WikiService {
 
     const categoryCounts: Record<string, number> = {};
     let lastUpdated: string | null = null;
-    const recentPages: { path: string; title: string; updated: string; action: string }[] = [];
 
+    const pageMeta = new Map<string, { tags: string[]; confidence: string }>();
     for (const page of pages) {
       const cat = page.path.includes('/') ? page.path.split('/')[0] : '_other';
       categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
 
       const updated = page.frontmatter.updated || page.frontmatter.created || '';
       if (updated && (!lastUpdated || updated > lastUpdated)) lastUpdated = updated;
+
+      pageMeta.set(page.path, {
+        tags: page.frontmatter.tags ?? [],
+        confidence: page.frontmatter.confidence ?? '',
+      });
     }
 
     let recentCount = 0;
+    const recentPages: { path: string; title: string; updated: string; action: string; category: string; tags: string[]; confidence: string; agoMs: number; summary: string }[] = [];
     try {
       const logPath = join(this.baseDir, 'log.md');
       const logRaw = await readFile(logPath, 'utf-8');
@@ -445,11 +510,31 @@ class WikiService {
         const cols = line.split('|').map((c) => c.trim()).filter(Boolean);
         if (cols.length >= 3) {
           const ts = new Date(cols[0]).getTime();
-          if (now - ts < oneDayMs) recentCount++;
-          if (recentPages.length < 5) {
+          const agoMs = now - ts;
+          if (agoMs < oneDayMs) recentCount++;
+          if (recentPages.length < 20) {
             const detail = cols[2];
-            const [pagePath, title] = detail.includes(' — ') ? detail.split(' — ', 2) : [detail, detail];
-            recentPages.push({ path: pagePath, title: title || pagePath, updated: cols[0], action: cols[1] });
+            let mainPart = detail;
+            let summary = '';
+            const splitIdx = detail.indexOf(' ⟫ ');
+            if (splitIdx >= 0) {
+              mainPart = detail.substring(0, splitIdx);
+              summary = detail.substring(splitIdx + 3).trim();
+            }
+            const [pagePath, title] = mainPart.includes(' — ') ? mainPart.split(' — ', 2) : [mainPart, mainPart];
+            const category = pagePath.includes('/') ? pagePath.split('/')[0] : '_other';
+            const meta = pageMeta.get(pagePath);
+            recentPages.push({
+              path: pagePath,
+              title: title || pagePath,
+              updated: cols[0],
+              action: cols[1],
+              category,
+              tags: meta?.tags ?? [],
+              confidence: meta?.confidence ?? '',
+              agoMs,
+              summary,
+            });
           }
         }
       }

@@ -23,7 +23,7 @@ function AppRoutes() {
     <AppLayout>
       <Suspense fallback={<PageLoader />}>
         <Routes>
-          <Route path="/" element={<Navigate to="/editor" replace />} />
+          <Route path="/" element={<Navigate to="/chat" replace />} />
           <Route path="/editor" element={<EditorPage />} />
           <Route path="/query" element={<QueryPage />} />
           <Route path="/chat" element={<ChatPage />} />

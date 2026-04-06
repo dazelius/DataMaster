@@ -1,20 +1,9 @@
-import { useState, useMemo } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
-import { useSyncStore } from '../../stores/syncStore';
-import { useSchemaStore } from '../../stores/schemaStore';
+import { useState, useEffect, useRef } from 'react';
+import { NavLink } from 'react-router-dom';
+import { useSyncStore, type RepoSyncStatus } from '../../stores/syncStore';
 import { useWikiStats } from '../../hooks/useWikiStats';
 
 const NAV_ITEMS = [
-  {
-    to: '/editor',
-    label: 'ERD Editor',
-    icon: 'M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z',
-  },
-  {
-    to: '/query',
-    label: 'SQL Query',
-    icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z',
-  },
   {
     to: '/chat',
     label: 'AI Chat',
@@ -27,23 +16,198 @@ const NAV_ITEMS = [
   },
 ];
 
+const REPO_LABELS: Record<string, string> = {
+  data: 'Game Data',
+  code: 'Game Code',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: '대기 중',
+  syncing: '동기화 중...',
+  loading_data: '데이터 로딩...',
+  done: '완료',
+  error: '오류',
+};
+
+function ElapsedTimer() {
+  const startRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 300);
+    return () => clearInterval(id);
+  }, []);
+
+  const secs = Math.floor(elapsed / 1000);
+  if (secs < 60) return <span className="text-[9px] tabular-nums text-[var(--color-text-muted)]">{secs}s</span>;
+  return <span className="text-[9px] tabular-nums text-[var(--color-text-muted)]">{Math.floor(secs / 60)}m{secs % 60}s</span>;
+}
+
+function IndeterminateBar() {
+  return (
+    <div className="h-1 w-full rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+      <div
+        className="h-full w-1/3 rounded-full bg-[var(--color-accent)]"
+        style={{ animation: 'indeterminate 1.4s ease-in-out infinite' }}
+      />
+      <style>{`
+        @keyframes indeterminate {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(400%); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function RepoRow({ repo }: { repo: RepoSyncStatus }) {
+  const isActive = repo.status === 'syncing' || repo.status === 'loading_data';
+  const isDone = repo.status === 'done';
+  const isError = repo.status === 'error';
+  const isPending = repo.status === 'pending';
+
+  return (
+    <div className={`rounded-[var(--radius-md)] px-2.5 py-1.5 transition-all ${isActive ? 'bg-[var(--color-accent)]/5' : ''}`}>
+      <div className="flex items-center gap-2">
+        {/* Status icon */}
+        <div className="flex-shrink-0">
+          {isPending && <span className="block h-2 w-2 rounded-full bg-[var(--color-text-muted)] opacity-30" />}
+          {isActive && (
+            <svg className="h-3 w-3 animate-spin text-[var(--color-accent)]" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+              <path className="opacity-80" d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+          )}
+          {isDone && (
+            <svg className="h-3 w-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          )}
+          {isError && (
+            <svg className="h-3 w-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          )}
+        </div>
+
+        {/* Repo name */}
+        <span className={`text-[10px] flex-1 truncate ${isActive ? 'text-[var(--color-text-primary)] font-medium' : 'text-[var(--color-text-secondary)]'}`}>
+          {REPO_LABELS[repo.id] ?? repo.id}
+        </span>
+
+        {/* Status text + timer */}
+        <div className="flex items-center gap-1.5">
+          {isActive && <ElapsedTimer />}
+          {!isActive && repo.message && (
+            <span className={`text-[9px] truncate max-w-[90px] ${isError ? 'text-red-400' : 'text-[var(--color-text-muted)]'}`} title={repo.message}>
+              {repo.message.length > 25 ? repo.message.slice(0, 25) + '...' : repo.message}
+            </span>
+          )}
+          {isActive && (
+            <span className="text-[9px] text-[var(--color-accent)]">{STATUS_LABELS[repo.status]}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar for active repos */}
+      {isActive && (
+        <div className="mt-1.5">
+          <IndeterminateBar />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SyncPanel() {
+  const { isSyncing, repos, phase, lastSync, error } = useSyncStore();
+
+  if (!isSyncing && !lastSync && !error) return null;
+
+  const doneCount = repos.filter((r) => r.status === 'done').length;
+  const totalCount = repos.length;
+  const hasAnyActive = repos.some((r) => r.status === 'syncing' || r.status === 'loading_data');
+  const postGitPhase = !hasAnyActive && isSyncing;
+
+  return (
+    <div className="mx-2 mb-2 rounded-[var(--radius-lg)] bg-[var(--color-surface-0)] border border-[var(--color-border-subtle)] overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="flex items-center gap-2">
+          {isSyncing ? (
+            <>
+              <div className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--color-accent)] opacity-50" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--color-accent)]" />
+              </div>
+              <span className="text-[11px] font-medium text-[var(--color-accent)]">
+                {postGitPhase ? (phase === 'loading_schema' ? '스키마 로딩...' : phase === 'loading_tables' ? '테이블 로딩...' : '처리 중...') : 'Git 동기화'}
+              </span>
+            </>
+          ) : error ? (
+            <>
+              <span className="h-2 w-2 rounded-full bg-red-400" />
+              <span className="text-[11px] font-medium text-red-400 truncate" title={error}>오류</span>
+            </>
+          ) : (
+            <>
+              <svg className="h-3 w-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
+              <span className="text-[11px] text-[var(--color-text-muted)]">동기화 완료</span>
+            </>
+          )}
+        </div>
+
+        {totalCount > 0 && (
+          <span className="text-[9px] tabular-nums text-[var(--color-text-muted)]">
+            {doneCount}/{totalCount}
+          </span>
+        )}
+      </div>
+
+      {/* Overall progress bar */}
+      {isSyncing && totalCount > 0 && (
+        <div className="px-3 pb-1">
+          <div className="h-0.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+            <div
+              className="h-full rounded-full bg-[var(--color-accent)] transition-all duration-500 ease-out"
+              style={{ width: `${(doneCount / totalCount) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Per-repo status — always visible when repos exist */}
+      {repos.length > 0 && (
+        <div className="border-t border-[var(--color-border-subtle)] px-1.5 py-1 space-y-0.5">
+          {repos.map((repo) => (
+            <RepoRow key={repo.id} repo={repo} />
+          ))}
+        </div>
+      )}
+
+      {/* Post-git loading phases */}
+      {postGitPhase && (
+        <div className="border-t border-[var(--color-border-subtle)] px-3 py-1.5">
+          <div className="flex items-center gap-2">
+            <svg className="h-3 w-3 animate-spin text-[var(--color-accent)]" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+              <path className="opacity-80" d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+            <span className="text-[10px] text-[var(--color-text-secondary)]">
+              {phase === 'loading_schema' ? '스키마 파싱 중...' : phase === 'loading_tables' ? '테이블 데이터 로딩...' : '데이터 처리 중...'}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Sidebar() {
   const isSyncing = useSyncStore((s) => s.isSyncing);
-  const schema = useSchemaStore((s) => s.schema);
-  const selectedTable = useSchemaStore((s) => s.selectedTable);
-  const setSelectedTable = useSchemaStore((s) => s.setSelectedTable);
-  const location = useLocation();
   const { stats: wikiStats } = useWikiStats();
-
-  const [search, setSearch] = useState('');
-
-  const isEditorPage = location.pathname === '/editor' || location.pathname === '/';
-
-  const filteredTables = useMemo(() => {
-    if (!schema?.tables) return [];
-    const q = search.toLowerCase();
-    return schema.tables.filter((t) => t.name.toLowerCase().includes(q));
-  }, [schema, search]);
 
   return (
     <aside className="hidden md:flex w-60 h-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-1)]">
@@ -54,7 +218,10 @@ export function Sidebar() {
         </div>
         <span className="text-sm font-semibold text-[var(--color-text-primary)]">DataMaster</span>
         {isSyncing && (
-          <div className="ml-auto h-2 w-2 animate-pulse rounded-full bg-[var(--color-warning)]" title="Syncing..." />
+          <svg className="ml-auto h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-80" d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          </svg>
         )}
       </div>
 
@@ -90,52 +257,10 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Table list (ERD page) */}
-      {isEditorPage && schema && (
-        <div className="flex flex-1 flex-col overflow-hidden border-t border-[var(--color-border-subtle)]">
-          <div className="px-3 pt-3 pb-2">
-            <div className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-0)] px-2.5 py-1.5">
-              <svg className="h-3.5 w-3.5 text-[var(--color-text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search tables..."
-                className="flex-1 bg-transparent text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] outline-none"
-              />
-            </div>
-          </div>
-
-          <div className="px-3 pb-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--color-text-muted)]">
-              Tables &middot; {filteredTables.length}
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-2 pb-2">
-            {filteredTables.map((table) => (
-              <button
-                key={table.name}
-                onClick={() => setSelectedTable(selectedTable === table.name ? null : table.name)}
-                className={`flex w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  selectedTable === table.name
-                    ? 'bg-[var(--color-accent-subtle)] text-[var(--color-accent)]'
-                    : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]'
-                }`}
-              >
-                <span
-                  className="h-2 w-2 flex-shrink-0 rounded-sm"
-                  style={{ backgroundColor: table.headerColor ?? '#3b82f6' }}
-                />
-                <span className="flex-1 truncate">{table.name}</span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">{table.columns.length}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Sync status panel */}
+      <div className="mt-auto pb-2">
+        <SyncPanel />
+      </div>
     </aside>
   );
 }

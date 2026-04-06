@@ -62,6 +62,7 @@ export default function WikiPage() {
 
   const pagePath = location.pathname.replace(/^\/wiki\/?/, '') || '';
   const [pages, setPages] = useState<WikiPageMeta[]>([]);
+  const [pagesLoading, setPagesLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState<WikiPageData | null>(null);
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<WikiSearchResult[] | null>(null);
@@ -75,8 +76,23 @@ export default function WikiPage() {
     try {
       const data = await api.get<{ pages: WikiPageMeta[] }>('/api/wiki/pages');
       setPages(data.pages);
+      setPagesLoading(false);
+      if (data.pages.length === 0) {
+        setTimeout(async () => {
+          try {
+            const retry = await api.get<{ pages: WikiPageMeta[] }>('/api/wiki/pages');
+            if (retry.pages.length > 0) setPages(retry.pages);
+          } catch { /* ignore */ }
+        }, 3000);
+      }
     } catch {
-      setPages([]);
+      setPagesLoading(false);
+      setTimeout(async () => {
+        try {
+          const retry = await api.get<{ pages: WikiPageMeta[] }>('/api/wiki/pages');
+          setPages(retry.pages);
+        } catch { /* ignore */ }
+      }, 2000);
     }
   }, []);
 
@@ -126,7 +142,11 @@ export default function WikiPage() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  useEffect(() => { loadPages(); }, [loadPages]);
+  useEffect(() => {
+    loadPages();
+    const interval = setInterval(loadPages, 30_000);
+    return () => clearInterval(interval);
+  }, [loadPages]);
   useEffect(() => { loadPage(pagePath); }, [pagePath, loadPage]);
   useEffect(() => { loadBacklinks(pagePath); }, [pagePath, loadBacklinks]);
   useEffect(() => {
@@ -246,11 +266,20 @@ export default function WikiPage() {
 
             {pages.length === 0 && !searchResults && (
               <div className="flex flex-col items-center justify-center h-40 text-center">
-                <svg className="w-8 h-8 text-[var(--color-text-muted)] mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                </svg>
-                <p className="text-xs text-[var(--color-text-muted)]">위키가 비어있습니다</p>
-                <p className="text-[10px] text-[var(--color-text-muted)] mt-1">AI 챗봇이 대화 중 지식을 축적합니다</p>
+                {pagesLoading ? (
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--color-border)] border-t-[var(--color-accent)]" />
+                ) : (
+                  <>
+                    <svg className="w-8 h-8 text-[var(--color-text-muted)] mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                    </svg>
+                    <p className="text-xs text-[var(--color-text-muted)]">위키가 비어있습니다</p>
+                    <p className="text-[10px] text-[var(--color-text-muted)] mt-1">AI 챗봇이 대화 중 지식을 축적합니다</p>
+                    <button onClick={loadPages} className="mt-2 text-[10px] text-[var(--color-accent)] hover:underline">
+                      새로고침
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -621,9 +650,31 @@ function WikiMarkdown({ content, navigateToPage }: { content: string; navigateTo
   );
 }
 
+function formatRelativeTime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return '방금 전';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}일 전`;
+  if (days < 30) return `${Math.floor(days / 7)}주 전`;
+  return `${Math.floor(days / 30)}개월 전`;
+}
+
 function WikiWelcome({ totalPages, onNavigate, onPageClick }: { totalPages: number; onNavigate: (path: string) => void; onPageClick: (path: string) => void }) {
   const { stats } = useWikiStats(15_000);
   const [showFullGraph, setShowFullGraph] = useState(false);
+  const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+
+  const toggleExpand = (idx: number) => {
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
 
   if (showFullGraph) {
     return (
@@ -730,29 +781,139 @@ function WikiWelcome({ totalPages, onNavigate, onPageClick }: { totalPages: numb
         </div>
       )}
 
-      {/* Recent activity */}
+      {/* Recent activity — Timeline */}
       {stats.recentPages.length > 0 && (
-        <div className="w-full max-w-xl">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-text-muted)] mb-2 px-1">Recent Activity</h3>
-          <div className="card rounded-[var(--radius-lg)] divide-y divide-[var(--color-border-subtle)]">
-            {stats.recentPages.map((rp, i) => (
-              <button
-                key={`${rp.path}-${i}`}
-                onClick={() => onPageClick(rp.path)}
-                className="flex items-center gap-3 w-full px-4 py-3 text-left hover:bg-[var(--color-surface-2)] transition-colors first:rounded-t-[var(--radius-lg)] last:rounded-b-[var(--radius-lg)]"
-              >
-                <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                  rp.action === 'create' ? 'bg-green-500' : rp.action === 'update' ? 'bg-blue-500' : 'bg-red-500'
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium text-[var(--color-text-primary)] truncate">{rp.title}</div>
-                  <div className="text-[10px] text-[var(--color-text-muted)]">{rp.path}</div>
-                </div>
-                <div className="text-[10px] text-[var(--color-text-muted)] flex-shrink-0">
-                  {rp.action === 'create' ? 'NEW' : rp.action === 'update' ? 'UPD' : 'DEL'}
-                </div>
-              </button>
-            ))}
+        <div className="w-full max-w-2xl">
+          <div className="flex items-center justify-between mb-3 px-1">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-text-muted)] flex items-center gap-2">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Recent Changes
+              {stats.recentCount > 0 && (
+                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-500/15 text-red-400 px-2 py-0.5 text-[10px] font-bold">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                  {stats.recentCount} today
+                </span>
+              )}
+            </h3>
+          </div>
+
+          <div className="relative">
+            {/* Timeline line */}
+            <div className="absolute left-[19px] top-2 bottom-2 w-px bg-[var(--color-border-subtle)]" />
+
+            <div className="space-y-1">
+              {stats.recentPages.map((rp, i) => {
+                const actionConfig = {
+                  create: { label: '생성', color: 'bg-green-500', textColor: 'text-green-400', bgColor: 'bg-green-500/10', icon: 'M12 4.5v15m7.5-7.5h-15' },
+                  update: { label: '수정', color: 'bg-blue-500', textColor: 'text-blue-400', bgColor: 'bg-blue-500/10', icon: 'M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z' },
+                  delete: { label: '삭제', color: 'bg-red-500', textColor: 'text-red-400', bgColor: 'bg-red-500/10', icon: 'M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0' },
+                }[rp.action] ?? { label: rp.action, color: 'bg-zinc-500', textColor: 'text-zinc-400', bgColor: 'bg-zinc-500/10', icon: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z' };
+
+                const catColor = { entities: '#c084fc', concepts: '#60a5fa', analysis: '#34d399', guides: '#fbbf24' }[rp.category] ?? '#94a3b8';
+
+                const isToday = rp.agoMs < 86_400_000;
+
+                const isExpanded = expandedItems.has(i);
+                const hasSummary = !!rp.summary;
+
+                return (
+                  <div key={`${rp.path}-${i}`} className="relative">
+                    <div
+                      className="relative flex items-start gap-3 w-full pl-3 pr-4 py-2.5 text-left rounded-[var(--radius-lg)] hover:bg-[var(--color-surface-2)] transition-colors group cursor-pointer"
+                      onClick={() => hasSummary ? toggleExpand(i) : onPageClick(rp.path)}
+                    >
+                      {/* Timeline dot */}
+                      <div className={`relative z-10 mt-0.5 flex-shrink-0 h-[14px] w-[14px] rounded-full border-2 border-[var(--color-surface-0)] ${actionConfig.color} ${isToday ? 'ring-2 ring-offset-1 ring-offset-[var(--color-surface-0)]' : ''}`}
+                        style={isToday ? { ringColor: actionConfig.color.replace('bg-', '').replace('-500', '') } : {}}
+                      />
+
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onPageClick(rp.path); }}
+                            className="text-xs font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent)] transition-colors truncate hover:underline"
+                          >
+                            {rp.title}
+                          </button>
+                          <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase ${actionConfig.bgColor} ${actionConfig.textColor}`}>
+                            <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d={actionConfig.icon} />
+                            </svg>
+                            {actionConfig.label}
+                          </span>
+                          {rp.confidence && (
+                            <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${
+                              rp.confidence === 'high' ? 'bg-green-500/10 text-green-400' :
+                              rp.confidence === 'medium' ? 'bg-yellow-500/10 text-yellow-400' :
+                              'bg-red-500/10 text-red-400'
+                            }`}>
+                              {rp.confidence}
+                            </span>
+                          )}
+                          {hasSummary && (
+                            <svg className={`w-3 h-3 text-[var(--color-text-muted)] transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="h-2 w-2 rounded-full flex-shrink-0" style={{ backgroundColor: catColor }} />
+                          <span className="text-[10px] text-[var(--color-text-muted)] truncate">{rp.path}</span>
+                          {rp.tags.length > 0 && (
+                            <span className="text-[10px] text-[var(--color-text-muted)] truncate">
+                              {rp.tags.slice(0, 2).map((t) => `#${t}`).join(' ')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Relative time */}
+                      <div className="flex-shrink-0 text-right mt-0.5">
+                        <div className={`text-[10px] font-medium ${isToday ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)]'}`}>
+                          {formatRelativeTime(rp.agoMs)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expanded detail */}
+                    {isExpanded && hasSummary && (
+                      <div className="ml-[26px] pl-4 pb-2 border-l-2 border-[var(--color-border-subtle)]">
+                        <div className="rounded-[var(--radius-md)] bg-[var(--color-surface-1)] border border-[var(--color-border-subtle)] px-3 py-2.5">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <svg className="w-3 h-3 text-[var(--color-text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                            </svg>
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">변경 내역</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {rp.summary.split(', ').map((part, pi) => {
+                              const isAdd = part.startsWith('+') || part.includes('추가') || part.includes('새 ');
+                              const isRemove = part.startsWith('-') || part.includes('제거') || part.includes('삭제');
+                              const isChange = part.includes('→') || part.includes('수정');
+                              const badgeColor = isAdd ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                                : isRemove ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                : isChange ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                                : 'bg-[var(--color-surface-2)] text-[var(--color-text-secondary)] border-[var(--color-border-subtle)]';
+                              return (
+                                <span key={pi} className={`inline-block rounded-[var(--radius-sm)] border px-2 py-0.5 text-[10px] font-medium ${badgeColor}`}>
+                                  {part.trim()}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-2 text-[10px] text-[var(--color-text-muted)]">
+                            {rp.updated}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

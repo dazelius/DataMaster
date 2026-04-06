@@ -28,6 +28,11 @@ const envSchema = z.object({
 
   CONFLUENCE_BASE_URL: z.string().default(''),
 
+  GOOGLE_SHEETS_ID: z.string().default(''),
+  GOOGLE_API_KEY: z.string().default(''),
+  GOOGLE_SERVICE_ACCOUNT_KEY: z.string().default(''),
+  GOOGLE_STRINGDATA_SYNC_INTERVAL: z.coerce.number().default(300_000),
+
   DB_PATH: z.string().default('./data/datamaster.db'),
   WIKI_DIR: z.string().default('./data/wiki'),
 

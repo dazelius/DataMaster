@@ -289,6 +289,83 @@ registerTool({
   },
 });
 
+// --- StringData / Localization Tools ---
+
+registerTool({
+  name: 'search_strings',
+  description: 'Search localization StringData from Google Sheets. Searches across all languages by key name or text content. Use for: finding string keys, checking translations, localization QA, missing translation detection.',
+  inputSchema: z.object({
+    query: z.string(),
+    lang: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search text (matches key name and translation content)' },
+      lang: { type: 'string', description: 'Filter by language column (e.g. "Korean", "English", "Portuguese")' },
+      limit: { type: 'number', description: 'Max results (default 50)' },
+    },
+    required: ['query'],
+  },
+  async execute(input) {
+    const { query, lang, limit } = input as { query: string; lang?: string; limit?: number };
+    const { searchStrings } = await import('../google/stringDataService.js');
+    const results = searchStrings(query, lang, limit ?? 50);
+    return JSON.stringify({ query, matchCount: results.length, results });
+  },
+});
+
+registerTool({
+  name: 'get_string',
+  description: 'Get a specific localization string by its exact key. Returns all language translations for that key.',
+  inputSchema: z.object({ key: z.string() }),
+  claudeSchema: {
+    type: 'object',
+    properties: { key: { type: 'string', description: 'Exact string key (e.g. "UI_BTN_START", "SKILL_001_NAME")' } },
+    required: ['key'],
+  },
+  async execute(input) {
+    const { key } = input as { key: string };
+    const { getStringByKey } = await import('../google/stringDataService.js');
+    const entry = getStringByKey(key);
+    if (!entry) return `String key '${key}' not found`;
+    return JSON.stringify(entry);
+  },
+});
+
+registerTool({
+  name: 'string_stats',
+  description: 'Get StringData localization statistics: total entries, per-sheet counts, available languages, and missing translation counts per language. Use for localization coverage reports.',
+  inputSchema: z.object({}),
+  claudeSchema: { type: 'object', properties: {}, required: [] },
+  async execute() {
+    const { getStringStats } = await import('../google/stringDataService.js');
+    return JSON.stringify(getStringStats());
+  },
+});
+
+registerTool({
+  name: 'query_string_data',
+  description: 'Execute SQL on the StringData table (localization strings from Google Sheets). Table name: StringData. Columns: key, Korean, English, Portuguese, etc. For per-sheet tables: StringData_{SheetName}. Example: SELECT * FROM StringData WHERE key LIKE \'%SKILL%\' LIMIT 20',
+  inputSchema: z.object({ sql: z.string() }),
+  claudeSchema: {
+    type: 'object',
+    properties: { sql: { type: 'string', description: 'SQL query on StringData tables (alasql syntax)' } },
+    required: ['sql'],
+  },
+  async execute(input) {
+    const { sql } = input as { sql: string };
+    try {
+      const { serverExecuteQuery } = await import('../data/serverQueryEngine.js');
+      const result = serverExecuteQuery(sql);
+      return JSON.stringify({ ...result, source: 'StringData (Google Sheets)' });
+    } catch (err) {
+      return `SQL Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  },
+});
+
 // --- Jira Tools ---
 
 registerTool({

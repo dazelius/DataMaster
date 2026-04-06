@@ -5,7 +5,9 @@ import { initializeDb } from './db/client.js';
 import { gitService } from './services/git/gitService.js';
 import { loadGameData, invalidateCache } from './services/data/dataService.js';
 import { wikiService } from './services/wiki/wikiService.js';
-import { initServerQueryEngine } from './services/data/serverQueryEngine.js';
+import { initServerQueryEngine, registerStringDataTables } from './services/data/serverQueryEngine.js';
+import * as stringDataService from './services/google/stringDataService.js';
+import * as googleSheets from './services/google/googleSheetsService.js';
 
 function registerRepos() {
   const baseDir = resolve(config.GIT_CLONE_BASE_DIR);
@@ -27,6 +29,7 @@ function registerRepos() {
       token: config.GITLAB_REPO2_TOKEN || undefined,
       localDir: resolve(baseDir, 'code'),
       label: 'Game Code',
+      shallow: true,
     });
   }
 }
@@ -86,6 +89,27 @@ async function main() {
 
   if (config.AUTO_SYNC_ON_START) {
     syncAndLoad(app.log).catch((err) => app.log.error(err));
+  }
+
+  if (googleSheets.isConfigured()) {
+    loadStringData(app.log);
+  } else {
+    app.log.warn('Google Sheets not configured — StringData disabled');
+  }
+}
+
+async function loadStringData(logger: { info: (msg: string) => void; warn: (msg: string) => void }) {
+  try {
+    await stringDataService.loadStringData();
+    registerStringDataTables();
+    logger.info('StringData loaded from Google Sheets');
+    stringDataService.setOnReloadCallback(() => {
+      registerStringDataTables();
+      logger.info('StringData tables refreshed after auto-sync');
+    });
+    stringDataService.startAutoSync();
+  } catch (err) {
+    logger.warn(`Failed to load StringData: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

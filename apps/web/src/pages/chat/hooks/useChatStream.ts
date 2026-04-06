@@ -14,6 +14,7 @@ export function useChatStream() {
     store.setStreaming(true);
     store.setStreamingText('');
     store.clearActiveTools();
+    useChatStore.setState({ toolHistory: [], iteration: 0 });
 
     abortRef.current = new AbortController();
     let buffer = '';
@@ -38,7 +39,6 @@ export function useChatStream() {
         buffer += decoder.decode(value, { stream: true });
         const events = parseSSELines(buffer);
 
-        // Keep unparsed remainder
         const lastNewline = buffer.lastIndexOf('\n\n');
         buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 2) : buffer;
 
@@ -52,9 +52,12 @@ export function useChatStream() {
               case 'text_delta':
                 store.appendStreamingText(parsed.delta);
                 break;
+              case 'thinking':
+                store.advanceIteration();
+                break;
               case 'tool_start':
                 store.addActiveTool({
-                  id: `tool-${Date.now()}`,
+                  id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                   name: parsed.toolName,
                   input: parsed.toolInput,
                   status: 'running',
@@ -85,12 +88,22 @@ export function useChatStream() {
         console.error('Chat stream error:', err);
       }
     } finally {
-      store.setStreaming(false);
+      store.resetStreamState();
       abortRef.current = null;
     }
   }, [store]);
 
   const cancel = useCallback(() => {
+    const currentText = useChatStore.getState().streamingText;
+    if (currentText.trim()) {
+      useChatStore.getState().addMessage({
+        id: `msg-cancel-${Date.now()}`,
+        sessionId: useChatStore.getState().currentSessionId ?? '',
+        role: 'assistant',
+        content: currentText + '\n\n_(응답이 중단되었습니다)_',
+        createdAt: Date.now() / 1000,
+      });
+    }
     abortRef.current?.abort();
   }, []);
 

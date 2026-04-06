@@ -1,12 +1,20 @@
 import type { ChatMessage } from '@datamaster/shared';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useNavigate } from 'react-router-dom';
+
+function processWikilinks(text: string): string {
+  return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, label) => {
+    return `[${label ?? target}](#/wiki/${target})`;
+  });
+}
 
 interface MessageBubbleProps {
   message: ChatMessage;
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
+  const navigate = useNavigate();
   const isUser = message.role === 'user';
 
   return (
@@ -52,10 +60,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 table: ({ children }) => <div className="overflow-x-auto my-2"><table className="w-full text-[12px] border-collapse">{children}</table></div>,
                 th: ({ children }) => <th className="border border-[var(--color-border)] bg-[var(--color-surface-0)] px-2 py-1.5 text-left font-medium">{children}</th>,
                 td: ({ children }) => <td className="border border-[var(--color-border-subtle)] px-2 py-1.5">{children}</td>,
-                a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>,
+                a: ({ href, children }) => {
+                  if (href?.startsWith('#/wiki/')) {
+                    const target = href.replace('#/wiki/', '');
+                    return (
+                      <button
+                        onClick={() => navigate(`/wiki/${target}`)}
+                        className="text-[var(--color-accent)] hover:underline font-medium inline"
+                      >
+                        {children}
+                      </button>
+                    );
+                  }
+                  return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>;
+                },
               }}
             >
-              {message.content}
+              {processWikilinks(message.content)}
             </ReactMarkdown>
           </div>
         )}

@@ -3,19 +3,23 @@ import { RESERVED_WORD_MAP } from '@datamaster/shared';
 import { wikiService } from '../wiki/wikiService.js';
 import { jiraService } from '../atlassian/jiraService.js';
 import { confluenceService } from '../atlassian/confluenceService.js';
+import { getCachedStringData, getStringStats } from '../google/stringDataService.js';
+import * as gsheets from '../google/googleSheetsService.js';
 
 export async function buildSystemPrompt(): Promise<string> {
   const parts: string[] = [];
 
-  parts.push(`You are DataMaster, a game data analysis assistant, wiki knowledge curator, and project management hub.
-You have THREE core responsibilities:
+  parts.push(`You are DataMaster, a game data analysis assistant, wiki knowledge curator, localization expert, and project management hub.
+You have FOUR core responsibilities:
 1. Game data analysis: Query, analyze, and explain game data using SQL and available tools.
 2. Wiki management: You ARE the sole maintainer of the persistent wiki knowledge base. You create, update, search, and maintain wiki pages using wiki_search, wiki_read, wiki_write, and wiki_lint tools. This is a CORE part of your identity, not optional.
-3. Project integration: You can access Jira issues and Confluence pages. When users ask about tasks, tickets, specs, design docs, or meeting notes — use jira_search, jira_get_issue, confluence_search, and confluence_get_page tools.
+3. Localization / StringData: You have access to the game's localization StringData (Google Sheets). You can search, query, and analyze string keys and translations across all supported languages. When users ask about text, UI strings, translations, or localization — use search_strings, get_string, string_stats, or query_string_data tools.
+4. Project integration: You can access Jira issues and Confluence pages. When users ask about tasks, tickets, specs, design docs, or meeting notes — use jira_search, jira_get_issue, confluence_search, and confluence_get_page tools.
 
 When a user asks about the wiki or requests information accumulation, ALWAYS use wiki tools. When you discover useful information through analysis, ALWAYS write it back to the wiki.
 When a user mentions a Jira ticket, task, or bug — use Jira tools. When they mention a Confluence page, spec, or design doc — use Confluence tools.
-Important: Information retrieved from Jira/Confluence should also be compiled into the wiki for persistent knowledge accumulation.
+When a user asks about text, strings, translations, or localization — use StringData tools (search_strings, get_string, query_string_data).
+Important: Information retrieved from Jira/Confluence/StringData should also be compiled into the wiki for persistent knowledge accumulation.
 
 Always respond in Korean unless the user writes in another language.
 When writing SQL queries, use the alasql syntax.`);
@@ -52,6 +56,38 @@ ${reservedEntries}`);
     // Wiki empty or not initialized
   }
 
+  // StringData context
+  const stringConfigured = gsheets.isConfigured();
+  const stringData = getCachedStringData();
+  if (stringConfigured && stringData) {
+    const stats = getStringStats();
+    const sheetList = stats.sheets.map((s) => `  - ${s.name}: ${s.count} entries`).join('\n');
+    const missingInfo = Object.entries(stats.missingTranslations)
+      .filter(([, v]) => v > 0)
+      .map(([lang, count]) => `${lang}: ${count} missing`)
+      .join(', ');
+
+    parts.push(`\n## StringData (Localization — Google Sheets)
+총 ${stats.totalEntries}개 스트링 키, ${stats.languages.length}개 언어: ${stats.languages.join(', ')}
+시트별 현황:
+${sheetList}
+${missingInfo ? `번역 누락: ${missingInfo}` : '전체 번역 완료'}
+
+StringData 테이블 구조: StringData(key, ${stats.languages.join(', ')})
+- SQL 쿼리: query_string_data 또는 query_game_data에서 FROM StringData 사용 가능
+- 텍스트 검색: search_strings (키 이름 + 번역 텍스트 동시 검색)
+- 키 조회: get_string (정확한 키로 모든 언어 번역 조회)
+- 통계: string_stats (누락 번역 수, 시트별 카운트 등)
+
+⚡ 로컬라이징 관련 질문 시:
+1. search_strings로 관련 키 검색 (빠름)
+2. 복잡한 조건은 query_string_data로 SQL 쿼리
+3. 분석 결과는 위키 analysis/localization/ 에 기록`);
+  } else if (stringConfigured) {
+    parts.push(`\n## StringData (Localization — Google Sheets)
+상태: 설정됨, 아직 로딩 중 또는 실패. search_strings / get_string / query_string_data 도구 사용 가능.`);
+  }
+
   // Jira/Confluence connectivity info
   const jiraConnected = jiraService.isConfigured();
   const confluenceConnected = confluenceService.isConfigured();
@@ -62,6 +98,12 @@ ${reservedEntries}`);
 - query_game_data: SQL 쿼리 실행 (서버에서 직접 실행, 실제 결과 반환)
 - show_table_schema: 테이블 구조 확인 (원본 데이터)
 - list_tables: 전체 테이블 목록 조회
+
+### StringData / Localization ${stringConfigured ? '(✓ 연결됨)' : '(✗ 미설정)'}
+- search_strings: 키/텍스트로 스트링 검색 (언어 필터 가능)
+- get_string: 정확한 키로 전체 언어 번역 조회
+- string_stats: 로컬라이징 통계 (번역 커버리지, 누락 현황)
+- query_string_data: StringData 테이블에 SQL 쿼리 실행
 
 ### Git
 - query_git_history: Git 커밋 이력 조회
@@ -90,8 +132,9 @@ function buildWikiSchema(): string {
 
 You maintain a persistent, compounding knowledge wiki. This is NOT a RAG system where you re-derive knowledge on every query. Instead, you COMPILE knowledge into the wiki incrementally, and it persists across all conversations.
 
-### Four Layers
+### Five Layers
 1. **Raw Sources** (read-only): Game data tables (Excel → DB), Git repositories. You query these via tools but never modify them.
+1b. **StringData** (read-only): Localization strings from Google Sheets. You search and query via search_strings, get_string, query_string_data.
 2. **External Sources** (read-only): Jira issues and Confluence pages. You search and read these via tools but don't modify them.
 3. **The Wiki** (you own this): A directory of interlinked markdown files at data/wiki/. You create, update, and maintain all pages. This is the compiled knowledge layer. Information from ALL sources (data, Git, Jira, Confluence) should be compiled here.
 4. **This Schema** (your operating manual): The rules below tell you how to maintain the wiki.
@@ -122,6 +165,7 @@ Every wiki page MUST have clear sources. When writing wiki pages:
    - 테이블 쿼리: "table:Character", "query:SELECT * FROM Weapon"
    - Jira 이슈: "jira:AEGIS-1234"  
    - Confluence: "confluence:페이지제목 (id:12345)"
+   - StringData: "stringdata:SKILL_001_NAME", "stringdata:search:공격"
    - Git 커밋: "git:abc1234"
    - 유저 입력: "user:대화내용요약"
 2. **본문 내 인라인 출처**: 중요한 사실 옆에 출처를 괄호로 표기
