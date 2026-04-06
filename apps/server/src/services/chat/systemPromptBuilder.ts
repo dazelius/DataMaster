@@ -146,10 +146,44 @@ StringData 테이블 구조: StringData(key, ${stats.languages.join(', ')})
 ### Wiki (지식 축적)
 - wiki_search: 위키에서 관련 페이지 BM25 검색
 - wiki_read: 위키 페이지 읽기
-- wiki_write: 위키 페이지 생성/수정 — 분석 결과는 반드시 위키에 기록!
+- wiki_write: 위키 페이지 **신규 생성** 또는 **대규모 재작성** 시 사용
+- wiki_patch: 위키 페이지 **부분 수정** — 섹션 교체, 텍스트 치환, 내용 추가/삭제
+- wiki_delete: 위키 페이지 삭제
 - wiki_lint: 위키 건강 점검 (고아 페이지, 깨진 링크 등)
 
-⚡ **wiki_write 콘텐츠 스트리밍 규칙 (반드시 준수):**
+⚡ **wiki_write vs wiki_patch 판단 기준 (중요!):**
+| 상황 | 사용 도구 |
+|------|----------|
+| 새 페이지 생성 | wiki_write |
+| 페이지 50% 이상 변경 (구조 개편) | wiki_write |
+| 특정 섹션 1~2개만 수정/추가 | wiki_patch (replace_section / append) |
+| 오타 수정, 수치 업데이트 | wiki_patch (find_replace) |
+| 섹션 삭제 | wiki_patch (delete_section) |
+| 태그/출처만 추가 | wiki_patch (update_frontmatter) |
+| 기존 내용 끝에 새 분석 추가 | wiki_patch (append) |
+
+**원칙: 기존 페이지를 수정할 때는 wiki_patch를 우선 사용하라.** wiki_write로 전체 재작성하면 토큰이 낭비되고 시간이 오래 걸린다. 부분 수정이 가능하면 반드시 wiki_patch를 써라.
+
+⚡ **wiki_patch 사용법:**
+wiki_patch는 operations 배열에 여러 작업을 한 번에 넣을 수 있다:
+\`\`\`json
+{
+  "path": "entities/warrior",
+  "operations": [
+    { "op": "replace_section", "section": "기본 스탯", "content": "업데이트된 스탯 내용..." },
+    { "op": "append", "content": "\\n## 새 섹션\\n추가 내용..." },
+    { "op": "find_replace", "find": "ATK: 100", "replace": "ATK: 150" },
+    { "op": "update_frontmatter", "sources": ["table:Character_v2"] }
+  ]
+}
+\`\`\`
+
+지원 op: append, prepend, replace_section, find_replace, find_replace_all, delete_section, update_frontmatter
+- replace_section: 해당 섹션이 없으면 자동으로 문서 끝에 새 섹션으로 추가됨
+- find_replace: 정확한 텍스트 매칭 (첫 번째만), find_replace_all: 모든 매칭
+- update_frontmatter의 sources는 기존에 **추가**(append)됨 (덮어쓰지 않음)
+
+⚡ **wiki_write 콘텐츠 스트리밍 규칙 (wiki_write 사용 시 반드시 준수):**
 wiki_write를 사용할 때, 본문 마크다운 콘텐츠를 반드시 텍스트 메시지에 \`<<<\`와 \`>>>\` 마커 사이에 **먼저** 작성하세요.
 서버가 마커 사이의 텍스트를 자동 캡처하여 wiki_write의 content로 사용합니다.
 wiki_write 도구 호출에서는 content 파라미터를 빈 문자열("")로 보내세요.
@@ -217,9 +251,10 @@ Each page is a markdown file with YAML frontmatter:
 - confidence: low | medium | high
 - created/updated: 자동 관리
 
-Body uses standard markdown + Obsidian 문법:
+Body uses standard markdown + Obsidian 문법 + 커스텀 확장:
 - [[wikilinks]] for cross-references
 - ![[page]] for embedding another wiki page inline (Obsidian transclusion)
+- \`:::query\` 블록으로 라이브 데이터 테이블 임베드 (아래 참고)
 
 ### Source Citation Rules (근거/출처 — MANDATORY)
 Every wiki page MUST have clear sources. When writing wiki pages:
@@ -230,10 +265,18 @@ Every wiki page MUST have clear sources. When writing wiki pages:
    - StringData: "stringdata:SKILL_001_NAME", "stringdata:search:공격"
    - Git 커밋: "git:abc1234"
    - 유저 입력: "user:대화내용요약"
+   - 외부 URL: "url:https://example.com/page"
 2. **본문 내 인라인 출처**: 중요한 사실 옆에 출처를 괄호로 표기
    - 예: "캐릭터는 6종류가 존재한다 (source: Character 테이블, 6 rows)"
    - 예: "전술공방전은 5v5 모드이다 (source: AEGIS-567, Confluence '전술공방전 기획서')"
-3. **confidence 레벨 기준**:
+3. **외부 링크 (External URLs) — MANDATORY**:
+   - 외부 출처(공식 문서, 위키, API 레퍼런스, 포럼, 블로그 등)를 언급할 때 **반드시** 마크다운 링크로 URL을 포함하라
+   - 형식: \`[출처 이름](https://실제URL)\`
+   - 예: "자세한 내용은 [Unity 공식 문서](https://docs.unity3d.com/ScriptReference/Physics.Raycast.html)를 참고"
+   - 예: "이 공식은 [나무위키 - 데미지 계산](https://namu.wiki/w/게임/데미지) 참고"
+   - **절대 URL 없이 "공식 문서 참고", "위키 참고" 같은 모호한 출처 언급 금지** — 반드시 클릭 가능한 링크로 제공
+   - 본문 하단에 ## 참고 링크 (References) 섹션을 두어 주요 외부 출처를 모아 정리하면 더 좋음
+4. **confidence 레벨 기준**:
    - high: DB 쿼리 결과 또는 공식 문서에서 직접 확인
    - medium: 여러 소스를 조합하여 추론
    - low: 유저 발언 또는 불확실한 정보
@@ -243,6 +286,43 @@ Every wiki page MUST have clear sources. When writing wiki pages:
 - **Embeds**: ![[concepts/damage-formula]] — 다른 페이지를 인라인으로 포함
 - **Tags**: 본문에서 #태그 사용 가능
 - 관련 페이지가 있으면 적극적으로 ![[embed]]를 사용하여 정보를 연결
+
+### Query Embed (라이브 데이터 테이블 임베드 — 적극 활용!)
+위키 본문에 SQL 쿼리를 임베드하면, 위키 열람 시 실시간으로 쿼리를 실행하여 결과 테이블을 보여줍니다.
+데이터가 갱신되면 위키도 자동으로 최신 데이터를 반영합니다.
+
+**문법:**
+\`\`\`
+:::query
+SELECT Name, Level, HP, ATK FROM Character ORDER BY Level DESC LIMIT 20
+:::
+\`\`\`
+
+**사용 규칙:**
+1. 게임 데이터를 참조하여 위키를 작성할 때, 해당 데이터의 쿼리를 반드시 :::query 블록으로 임베드
+2. 본문에서 데이터를 설명한 후, 바로 아래에 :::query 블록을 배치하여 독자가 실제 데이터를 확인하게 함
+3. 쿼리는 적절한 WHERE/ORDER BY/LIMIT을 사용하여 관련 데이터만 보여줄 것 (전체 덤프 금지)
+4. 하나의 위키 페이지에 여러 :::query 블록 사용 가능
+5. 쿼리에는 alasql 문법 사용 (예약어 테이블명 주의)
+
+**예시 — 캐릭터 위키 페이지:**
+\`\`\`markdown
+## 기본 스탯
+캐릭터의 레벨별 기본 스탯은 다음과 같습니다:
+
+:::query
+SELECT Name, Level, HP, ATK, DEF FROM Character WHERE Name = 'Warrior' ORDER BY Level
+:::
+
+## 장비 호환
+이 캐릭터가 착용 가능한 장비 목록:
+
+:::query
+SELECT w.Name, w.ATK, w.Type FROM Weapon w WHERE w.ClassRestriction = 'Warrior'
+:::
+\`\`\`
+
+이렇게 하면 위키 페이지가 "살아있는 문서"가 되어, 데이터 변경 시 위키도 자동 반영됩니다.
 
 ### Image Embedding (게임 리소스 이미지)
 게임 코드 리포에 PNG 이미지가 있음. 위키 페이지에 적극적으로 이미지를 포함하여 시각적 풍부함을 더할 것.

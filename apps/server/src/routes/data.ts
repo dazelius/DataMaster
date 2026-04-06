@@ -71,6 +71,21 @@ function enrichWithLocalization(
 }
 
 export async function dataRoutes(app: FastifyInstance) {
+  app.post('/query', async (request, reply) => {
+    const { sql } = request.body as { sql?: string };
+    if (!sql || typeof sql !== 'string') {
+      reply.status(400).send({ error: 'sql parameter required' });
+      return;
+    }
+    try {
+      const { serverExecuteQuery } = await import('../services/data/serverQueryEngine.js');
+      const result = serverExecuteQuery(sql);
+      return result;
+    } catch (err) {
+      reply.status(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   app.post('/reload', async () => {
     const dataRepoDir = resolve(config.GIT_CLONE_BASE_DIR, 'data');
     invalidateCache();

@@ -163,7 +163,6 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    let resizeTimer: ReturnType<typeof setTimeout>;
     const ro = new ResizeObserver(() => {
       const rect = el.getBoundingClientRect();
       const w = Math.round(rect.width);
@@ -171,36 +170,22 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
       if (w > 10 && h > 10) {
         dimensionsRef.current = { w, h };
         setDimensions({ w, h });
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          if (nodesRef.current.length > 0) {
-            const fitSet = compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
-            zoomToFit(compact ? 20 : 40, fitSet);
-          }
-        }, 50);
       }
     });
     ro.observe(el);
 
-    // Force measure on mount — container may not have final size yet
-    const mountTimers = [100, 300, 600].map((ms) =>
-      setTimeout(() => {
-        const r = el.getBoundingClientRect();
-        const mw = Math.round(r.width);
-        const mh = Math.round(r.height);
-        if (mw > 10 && mh > 10) {
-          dimensionsRef.current = { w: mw, h: mh };
-          setDimensions({ w: mw, h: mh });
-          if (nodesRef.current.length > 0) {
-            const fitSet = compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
-            zoomToFit(compact ? 20 : 40, fitSet);
-          }
-        }
-      }, ms),
-    );
+    const mountTimer = setTimeout(() => {
+      const r = el.getBoundingClientRect();
+      const mw = Math.round(r.width);
+      const mh = Math.round(r.height);
+      if (mw > 10 && mh > 10) {
+        dimensionsRef.current = { w: mw, h: mh };
+        setDimensions({ w: mw, h: mh });
+      }
+    }, 100);
 
-    return () => { ro.disconnect(); clearTimeout(resizeTimer); mountTimers.forEach(clearTimeout); };
-  }, [compact, zoomToFit]);
+    return () => { ro.disconnect(); clearTimeout(mountTimer); };
+  }, [compact]);
 
   const { nodes, edges, focusedNeighbors, neighborEdges } = useMemo(() => {
     if (!graphData) return { nodes: [], edges: [], focusedNeighbors: new Set<string>(), neighborEdges: new Set<number>() };
@@ -281,17 +266,18 @@ export function WikiGraphView({ focusedPage, onPageClick, compact = false }: Pro
     hasZoomedToFit.current = false;
 
     const getFitSet = () => compact && focusedNeighborsRef.current.size > 0 ? focusedNeighborsRef.current : undefined;
-    const fitTimers = [
-      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 800),
-      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 2000),
-      setTimeout(() => zoomToFit(compact ? 20 : 40, getFitSet()), 4000),
-    ];
+    const fitTimer = setTimeout(() => {
+      if (!hasZoomedToFit.current) {
+        zoomToFit(compact ? 20 : 40, getFitSet());
+        hasZoomedToFit.current = true;
+      }
+    }, 1200);
 
     simRef.current = sim;
     return () => {
       sim.stop();
       cancelAnimationFrame(animRef.current);
-      fitTimers.forEach(clearTimeout);
+      clearTimeout(fitTimer);
     };
   }, [nodes, edges, compact, zoomToFit]);
 

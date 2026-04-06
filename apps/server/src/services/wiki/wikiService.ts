@@ -26,6 +26,19 @@ export interface WikiPageMeta {
   frontmatter: WikiFrontmatter;
 }
 
+export type PatchOp =
+  | { op: 'append'; content: string }
+  | { op: 'prepend'; content: string }
+  | { op: 'replace_section'; section: string; content: string }
+  | { op: 'find_replace'; find: string; replace: string }
+  | { op: 'find_replace_all'; find: string; replace: string }
+  | { op: 'delete_section'; section: string }
+  | { op: 'update_frontmatter'; tags?: string[]; sources?: string[]; confidence?: 'low' | 'medium' | 'high' };
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export interface WikiSearchResult {
   path: string;
   frontmatter: WikiFrontmatter;
@@ -302,6 +315,95 @@ class WikiService {
       : `${pagePath} — ${frontmatter.title}`;
     await this.appendLog(isNew ? 'create' : 'update', logDetail);
     await this.updateIndex();
+  }
+
+  async patchPage(pagePath: string, operations: PatchOp[]): Promise<{ success: boolean; applied: string[]; error?: string }> {
+    const page = await this.readPage(pagePath);
+    if (!page) return { success: false, applied: [], error: 'Page not found' };
+
+    let content = page.content;
+    const frontmatter = { ...page.frontmatter };
+    const applied: string[] = [];
+
+    for (const op of operations) {
+      switch (op.op) {
+        case 'append': {
+          content = content.trimEnd() + '\n\n' + op.content;
+          applied.push(`append (${op.content.length} chars)`);
+          break;
+        }
+        case 'prepend': {
+          content = op.content + '\n\n' + content.trimStart();
+          applied.push(`prepend (${op.content.length} chars)`);
+          break;
+        }
+        case 'replace_section': {
+          const sectionPattern = new RegExp(
+            `(^|\\n)(#{1,6}\\s*${escapeRegex(op.section)}\\s*\\n)([\\s\\S]*?)(?=\\n#{1,6}\\s|$)`,
+          );
+          const match = content.match(sectionPattern);
+          if (match) {
+            const heading = match[2];
+            content = content.replace(
+              sectionPattern,
+              `$1${heading}${op.content.trimStart()}`,
+            );
+            applied.push(`replace_section "${op.section}"`);
+          } else {
+            content = content.trimEnd() + `\n\n## ${op.section}\n${op.content}`;
+            applied.push(`replace_section "${op.section}" (new — appended)`);
+          }
+          break;
+        }
+        case 'find_replace': {
+          if (content.includes(op.find)) {
+            content = content.replace(op.find, op.replace);
+            applied.push(`find_replace "${op.find.slice(0, 40)}${op.find.length > 40 ? '...' : ''}"`);
+          } else {
+            applied.push(`find_replace SKIPPED — "${op.find.slice(0, 40)}" not found`);
+          }
+          break;
+        }
+        case 'find_replace_all': {
+          const count = content.split(op.find).length - 1;
+          if (count > 0) {
+            content = content.split(op.find).join(op.replace);
+            applied.push(`find_replace_all "${op.find.slice(0, 40)}" × ${count}`);
+          } else {
+            applied.push(`find_replace_all SKIPPED — "${op.find.slice(0, 40)}" not found`);
+          }
+          break;
+        }
+        case 'delete_section': {
+          const delPattern = new RegExp(
+            `\\n?(#{1,6}\\s*${escapeRegex(op.section)}\\s*\\n[\\s\\S]*?)(?=\\n#{1,6}\\s|$)`,
+          );
+          if (delPattern.test(content)) {
+            content = content.replace(delPattern, '');
+            applied.push(`delete_section "${op.section}"`);
+          } else {
+            applied.push(`delete_section SKIPPED — "${op.section}" not found`);
+          }
+          break;
+        }
+        case 'update_frontmatter': {
+          if (op.tags) frontmatter.tags = op.tags;
+          if (op.sources) frontmatter.sources = [...(frontmatter.sources ?? []), ...op.sources];
+          if (op.confidence) frontmatter.confidence = op.confidence;
+          applied.push('update_frontmatter');
+          break;
+        }
+      }
+    }
+
+    frontmatter.updated = new Date().toISOString().split('T')[0];
+    const fm = serializeFrontmatter(frontmatter);
+    const fullPath = this.resolvePath(pagePath);
+    await writeFile(fullPath, `${fm}\n\n${content.trim()}\n`, 'utf-8');
+    await this.appendLog('patch', `${pagePath} — ${frontmatter.title} ⟫ ${applied.join(', ')}`);
+    await this.updateIndex();
+
+    return { success: true, applied };
   }
 
   async deletePage(pagePath: string): Promise<boolean> {

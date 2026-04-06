@@ -228,6 +228,80 @@ registerTool({
 });
 
 registerTool({
+  name: 'wiki_patch',
+  description: `Partially modify an existing wiki page without rewriting the entire content. Use instead of wiki_write when making small/targeted changes. Supports multiple operations in one call:
+- append: Add content to the end
+- prepend: Add content to the beginning  
+- replace_section: Replace a specific ## section by heading name (creates it if missing)
+- find_replace: Replace first occurrence of exact text
+- find_replace_all: Replace all occurrences of exact text
+- delete_section: Remove an entire section by heading name
+- update_frontmatter: Add tags, sources, or change confidence`,
+  inputSchema: z.object({
+    path: z.string(),
+    operations: z.array(z.object({
+      op: z.enum(['append', 'prepend', 'replace_section', 'find_replace', 'find_replace_all', 'delete_section', 'update_frontmatter']),
+      content: z.string().optional(),
+      section: z.string().optional(),
+      find: z.string().optional(),
+      replace: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      sources: z.array(z.string()).optional(),
+      confidence: z.enum(['low', 'medium', 'high']).optional(),
+    })),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Wiki page path to patch (must already exist)' },
+      operations: {
+        type: 'array',
+        description: 'Array of patch operations to apply in order',
+        items: {
+          type: 'object',
+          properties: {
+            op: { type: 'string', enum: ['append', 'prepend', 'replace_section', 'find_replace', 'find_replace_all', 'delete_section', 'update_frontmatter'] },
+            content: { type: 'string', description: 'New content (for append/prepend/replace_section)' },
+            section: { type: 'string', description: 'Section heading text without # (for replace_section/delete_section)' },
+            find: { type: 'string', description: 'Exact text to find (for find_replace/find_replace_all)' },
+            replace: { type: 'string', description: 'Replacement text (for find_replace/find_replace_all)' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Tags to set (update_frontmatter)' },
+            sources: { type: 'array', items: { type: 'string' }, description: 'Sources to ADD (update_frontmatter, appended to existing)' },
+            confidence: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Confidence to set (update_frontmatter)' },
+          },
+          required: ['op'],
+        },
+      },
+    },
+    required: ['path', 'operations'],
+  },
+  async execute(input) {
+    const { path, operations } = input as { path: string; operations: Array<Record<string, unknown>> };
+    const { wikiService } = await import('../wiki/wikiService.js');
+    const ops = operations.map((raw) => {
+      const op = raw.op as string;
+      switch (op) {
+        case 'append': return { op, content: String(raw.content ?? '') } as const;
+        case 'prepend': return { op, content: String(raw.content ?? '') } as const;
+        case 'replace_section': return { op, section: String(raw.section ?? ''), content: String(raw.content ?? '') } as const;
+        case 'find_replace': return { op, find: String(raw.find ?? ''), replace: String(raw.replace ?? '') } as const;
+        case 'find_replace_all': return { op, find: String(raw.find ?? ''), replace: String(raw.replace ?? '') } as const;
+        case 'delete_section': return { op, section: String(raw.section ?? '') } as const;
+        case 'update_frontmatter': return {
+          op,
+          tags: Array.isArray(raw.tags) ? raw.tags.map(String) : undefined,
+          sources: Array.isArray(raw.sources) ? raw.sources.map(String) : undefined,
+          confidence: raw.confidence as 'low' | 'medium' | 'high' | undefined,
+        } as const;
+        default: return { op: 'append', content: '' } as const;
+      }
+    });
+    const result = await wikiService.patchPage(path, ops);
+    return JSON.stringify(result);
+  },
+});
+
+registerTool({
   name: 'wiki_lint',
   description: 'Health-check the wiki: find orphan pages (no inbound links), broken [[wikilinks]], duplicate titles, and identify important entities that lack wiki pages. Use periodically to maintain wiki quality.',
   inputSchema: z.object({}),
@@ -236,6 +310,24 @@ registerTool({
     const { wikiService } = await import('../wiki/wikiService.js');
     const result = await wikiService.lint();
     return JSON.stringify(result);
+  },
+});
+
+registerTool({
+  name: 'wiki_delete',
+  description: 'Delete a wiki page by path. Use when a page is outdated, duplicated, or no longer relevant. The user can also request page deletion.',
+  inputSchema: z.object({ path: z.string() }),
+  claudeSchema: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'Wiki page path to delete (e.g. "entities/old-page")' } },
+    required: ['path'],
+  },
+  async execute(input) {
+    const { path } = input as { path: string };
+    const { wikiService } = await import('../wiki/wikiService.js');
+    const deleted = await wikiService.deletePage(path);
+    if (!deleted) return JSON.stringify({ success: false, error: 'Page not found' });
+    return JSON.stringify({ success: true, path, message: `Deleted wiki page: ${path}` });
   },
 });
 

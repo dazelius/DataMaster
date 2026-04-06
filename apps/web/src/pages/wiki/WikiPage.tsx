@@ -73,6 +73,7 @@ export default function WikiPage() {
   const [showRightPanel, setShowRightPanel] = useState(true);
   const [showFullGraph, setShowFullGraph] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const loadPages = useCallback(async () => {
     try {
@@ -160,6 +161,16 @@ export default function WikiPage() {
     navigate(`/wiki/${path}`);
     setSidebarOpen(false);
   }, [navigate]);
+
+  const handleDeletePage = useCallback(async (path: string) => {
+    try {
+      await api.del(`/api/wiki/pages/${path.split('/').map(encodeURIComponent).join('/')}`);
+      setDeleteConfirm(null);
+      setCurrentPage(null);
+      navigate('/wiki');
+      loadPages();
+    } catch { /* ignore */ }
+  }, [navigate, loadPages]);
 
   const categorizedPages = useMemo(() => {
     const map = new Map<string, WikiPageMeta[]>();
@@ -358,17 +369,29 @@ export default function WikiPage() {
                   {currentPage.frontmatter.updated && (
                     <span className="text-[10px] text-[var(--color-text-muted)]">Updated: {currentPage.frontmatter.updated}</span>
                   )}
-                  {/* Right panel toggle */}
-                  <button
-                    onClick={() => setShowRightPanel(!showRightPanel)}
-                    className="ml-auto hidden md:flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
-                    title={showRightPanel ? 'Hide panel' : 'Show graph & backlinks'}
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
-                    </svg>
-                    {showRightPanel ? 'Hide' : 'Graph'}
-                  </button>
+                  <div className="ml-auto flex items-center gap-2">
+                    {/* Delete page */}
+                    <button
+                      onClick={() => setDeleteConfirm(pagePath)}
+                      className="flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-red-400 transition-colors"
+                      title="페이지 삭제"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                      </svg>
+                    </button>
+                    {/* Right panel toggle */}
+                    <button
+                      onClick={() => setShowRightPanel(!showRightPanel)}
+                      className="hidden md:flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+                      title={showRightPanel ? 'Hide panel' : 'Show graph & backlinks'}
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+                      </svg>
+                      {showRightPanel ? 'Hide' : 'Graph'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Title */}
@@ -491,6 +514,51 @@ export default function WikiPage() {
           onClose={() => setQuickSwitcherOpen(false)}
         />
       )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setDeleteConfirm(null)}>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-sm rounded-2xl bg-[var(--color-surface-1)] border border-[var(--color-border)] shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-3">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="flex-shrink-0 h-10 w-10 rounded-full bg-red-500/10 flex items-center justify-center">
+                  <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">페이지 삭제</h3>
+                  <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5">이 작업은 되돌릴 수 없습니다</p>
+                </div>
+              </div>
+              <div className="rounded-lg bg-[var(--color-surface-0)] border border-[var(--color-border-subtle)] px-3 py-2">
+                <div className="text-xs font-medium text-[var(--color-text-primary)] truncate">
+                  {currentPage?.frontmatter.title ?? deleteConfirm}
+                </div>
+                <div className="text-[10px] font-mono text-[var(--color-text-muted)] mt-0.5">{deleteConfirm}</div>
+              </div>
+            </div>
+            <div className="flex gap-2 px-5 py-4 border-t border-[var(--color-border-subtle)]">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={() => handleDeletePage(deleteConfirm)}
+                className="flex-1 rounded-lg bg-red-500/15 border border-red-500/30 px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/25 transition-colors"
+              >
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -526,6 +594,102 @@ function SourceBadge({ source }: { source: string }) {
       </svg>
       <span className="max-w-[200px] truncate">{label}</span>
     </span>
+  );
+}
+
+/* ── Query Embed (:::query ... :::) ──────────────── */
+
+function WikiQueryEmbed({ sql }: { sql: string }) {
+  const [result, setResult] = useState<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api.post<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number }>('/api/data/query', { sql });
+        if (!cancelled) setResult(data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Query failed');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sql]);
+
+  return (
+    <div className="my-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-1)] overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-[var(--color-surface-2)] transition-colors"
+      >
+        <svg className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12v-1.5c0-.621-.504-1.125-1.125-1.125M9.75 8.625c0 .621.504 1.125 1.125 1.125" />
+        </svg>
+        <code className="text-[11px] font-mono text-emerald-400 truncate flex-1">{sql}</code>
+        {result && (
+          <span className="text-[10px] text-[var(--color-text-muted)] flex-shrink-0">
+            {result.rowCount} rows{result.rowCount > result.rows.length ? ` (showing ${result.rows.length})` : ''}
+          </span>
+        )}
+        <svg className={`w-3 h-3 text-[var(--color-text-muted)] transition-transform ${collapsed ? '' : 'rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+        </svg>
+      </button>
+
+      {!collapsed && (
+        <div className="border-t border-[var(--color-border-subtle)]">
+          {loading && (
+            <div className="px-4 py-6 text-center">
+              <div className="inline-block h-4 w-4 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+            </div>
+          )}
+          {error && (
+            <div className="px-4 py-3 text-xs text-red-400 bg-red-500/5">
+              <span className="font-medium">Error:</span> {error}
+            </div>
+          )}
+          {result && result.columns.length > 0 && (
+            <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead className="sticky top-0 z-10">
+                  <tr>
+                    <th className="bg-[var(--color-surface-2)] border-b border-r border-[var(--color-border)] px-2.5 py-1.5 text-left font-medium text-[var(--color-text-muted)] text-[10px] w-8">#</th>
+                    {result.columns.map((col) => (
+                      <th key={col} className="bg-[var(--color-surface-2)] border-b border-r border-[var(--color-border)] px-2.5 py-1.5 text-left font-medium text-[var(--color-text-secondary)] text-[11px] whitespace-nowrap">
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.rows.map((row, ri) => (
+                    <tr key={ri} className="hover:bg-[var(--color-surface-2)]/50 transition-colors">
+                      <td className="border-b border-r border-[var(--color-border-subtle)] px-2.5 py-1.5 text-[10px] text-[var(--color-text-muted)] font-mono">{ri + 1}</td>
+                      {result.columns.map((col) => {
+                        const val = row[col];
+                        const isNum = typeof val === 'number';
+                        return (
+                          <td key={col} className={`border-b border-r border-[var(--color-border-subtle)] px-2.5 py-1.5 text-[11px] whitespace-nowrap ${isNum ? 'text-right font-mono text-[var(--color-accent)]' : 'text-[var(--color-text-primary)]'}`}>
+                            {val == null ? <span className="text-[var(--color-text-muted)] italic">null</span> : String(val)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {result && result.columns.length === 0 && (
+            <div className="px-4 py-3 text-xs text-[var(--color-text-muted)] text-center">No results</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -604,7 +768,14 @@ function WikiEmbed({ pagePath, navigateToPage }: { pagePath: string; navigateToP
                   const target = href.replace('#/wiki/', '');
                   return <button onClick={() => navigateToPage(target)} className="text-[var(--color-accent)] hover:underline cursor-pointer">{children}</button>;
                 }
-                return <a href={href} className="text-[var(--color-accent)] hover:underline">{children}</a>;
+                return (
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-[var(--color-accent)] hover:underline">
+                    {children}
+                    <svg className="w-2.5 h-2.5 flex-shrink-0 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                    </svg>
+                  </a>
+                );
               },
               code: ({ className, children, ...props }) => {
                 if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1 py-0.5 text-[12px] font-mono" {...props}>{children}</code>;
@@ -629,16 +800,20 @@ function WikiEmbed({ pagePath, navigateToPage }: { pagePath: string; navigateToP
 
 function WikiMarkdown({ content, navigateToPage }: { content: string; navigateToPage: (p: string) => void }) {
   const parts = useMemo(() => {
-    const segments: { type: 'text' | 'embed'; value: string }[] = [];
-    const embedRegex = /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+    const segments: { type: 'text' | 'embed' | 'query'; value: string }[] = [];
+    const combinedRegex = /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]|:::query\s*\n([\s\S]*?)\n:::/g;
     let lastIndex = 0;
     let match;
 
-    while ((match = embedRegex.exec(content)) !== null) {
+    while ((match = combinedRegex.exec(content)) !== null) {
       if (match.index > lastIndex) {
         segments.push({ type: 'text', value: content.slice(lastIndex, match.index) });
       }
-      segments.push({ type: 'embed', value: match[1].trim() });
+      if (match[1] !== undefined) {
+        segments.push({ type: 'embed', value: match[1].trim() });
+      } else if (match[2] !== undefined) {
+        segments.push({ type: 'query', value: match[2].trim() });
+      }
       lastIndex = match.index + match[0].length;
     }
 
@@ -655,6 +830,9 @@ function WikiMarkdown({ content, navigateToPage }: { content: string; navigateTo
         if (part.type === 'embed') {
           return <WikiEmbed key={`embed-${i}`} pagePath={part.value} navigateToPage={navigateToPage} />;
         }
+        if (part.type === 'query') {
+          return <WikiQueryEmbed key={`query-${i}`} sql={part.value} />;
+        }
         return (
           <ReactMarkdown
             key={`md-${i}`}
@@ -665,7 +843,14 @@ function WikiMarkdown({ content, navigateToPage }: { content: string; navigateTo
                   const target = href.replace('#/wiki/', '');
                   return <WikiLink target={target} navigateToPage={navigateToPage}>{children}</WikiLink>;
                 }
-                return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">{children}</a>;
+                return (
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-[var(--color-accent)] hover:underline">
+                    {children}
+                    <svg className="w-3 h-3 flex-shrink-0 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                    </svg>
+                  </a>
+                );
               },
               code: ({ className, children, ...props }) => {
                 if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-[13px] font-mono text-[var(--color-text-primary)]" {...props}>{children}</code>;

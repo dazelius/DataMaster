@@ -38,6 +38,13 @@ function getToolDetailText(tool: ToolCall): string | null {
   switch (tool.name) {
     case 'wiki_write':
       return `${inp.path ?? ''} — ${inp.title ?? ''}`;
+    case 'wiki_patch': {
+      const ops = Array.isArray(inp.operations) ? inp.operations : [];
+      const opNames = ops.map((o: Record<string, unknown>) => o.op).join(', ');
+      return `${inp.path ?? ''} — ${opNames || 'patch'}`;
+    }
+    case 'wiki_delete':
+      return `${inp.path ?? ''}`;
     case 'wiki_read':
       return `${inp.path ?? ''}`;
     case 'wiki_search':
@@ -65,7 +72,7 @@ function getToolDetailText(tool: ToolCall): string | null {
   }
 }
 
-const WIKI_TOOLS = new Set(['wiki_write', 'wiki_read', 'wiki_search', 'wiki_lint']);
+const WIKI_TOOLS = new Set(['wiki_write', 'wiki_read', 'wiki_search', 'wiki_lint', 'wiki_patch', 'wiki_delete']);
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
