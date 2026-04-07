@@ -71,7 +71,7 @@ export class ChatService {
     sessionId: string,
   ): Promise<void> {
     const client = this.getClient();
-    const systemPrompt = await buildSystemPrompt();
+    const systemPrompt = await buildSystemPrompt(userMessage);
     const tools = getToolDefinitions();
 
     const messages = rebuildHistory(history);

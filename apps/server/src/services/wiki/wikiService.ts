@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, readdir, unlink, stat } from 'fs/promises';
 import { join, relative, dirname, extname, basename } from 'path';
 import { existsSync } from 'fs';
+import simpleGit, { type SimpleGit } from 'simple-git';
 import { config } from '../../config.js';
 
 /* ── Types ─────────────────────────────────────────── */
@@ -67,6 +68,13 @@ export interface WikiLintResult {
   orphanPages: string[];
   brokenLinks: string[];
   duplicateTitles: string[];
+}
+
+export interface WikiHistoryEntry {
+  hash: string;
+  hashShort: string;
+  date: string;
+  message: string;
 }
 
 export interface WikiLogEntry {
@@ -219,9 +227,43 @@ function bm25Search(docs: { path: string; text: string; fm: WikiFrontmatter }[],
 
 class WikiService {
   private baseDir: string;
+  private git: SimpleGit;
+  private gitReady: Promise<void>;
 
   constructor() {
     this.baseDir = config.WIKI_DIR;
+    this.git = simpleGit(this.baseDir);
+    this.gitReady = this.initGit();
+  }
+
+  private async initGit(): Promise<void> {
+    if (!existsSync(this.baseDir)) {
+      await mkdir(this.baseDir, { recursive: true });
+    }
+    const gitDir = join(this.baseDir, '.git');
+    if (!existsSync(gitDir)) {
+      await this.git.init();
+      await this.git.addConfig('user.name', 'DataMaster Wiki');
+      await this.git.addConfig('user.email', 'wiki@datamaster.local');
+    }
+  }
+
+  private async gitCommit(filePath: string, message: string): Promise<void> {
+    try {
+      await this.gitReady;
+      const relPath = relative(this.baseDir, filePath).replace(/\\/g, '/');
+      await this.git.add(relPath);
+      await this.git.commit(message, [relPath], { '--allow-empty': null });
+    } catch { /* git errors should not break wiki operations */ }
+  }
+
+  private async gitCommitDelete(filePath: string, message: string): Promise<void> {
+    try {
+      await this.gitReady;
+      const relPath = relative(this.baseDir, filePath).replace(/\\/g, '/');
+      await this.git.rm(relPath).catch(() => this.git.add(relPath));
+      await this.git.commit(message, { '--allow-empty': null });
+    } catch { /* git errors should not break wiki operations */ }
   }
 
   private resolvePath(pagePath: string): string {
@@ -315,6 +357,7 @@ class WikiService {
       : `${pagePath} — ${frontmatter.title}`;
     await this.appendLog(isNew ? 'create' : 'update', logDetail);
     await this.updateIndex();
+    await this.gitCommit(fullPath, `${isNew ? 'create' : 'update'}: ${pagePath} — ${frontmatter.title}`);
   }
 
   async patchPage(pagePath: string, operations: PatchOp[]): Promise<{ success: boolean; applied: string[]; error?: string }> {
@@ -402,6 +445,7 @@ class WikiService {
     await writeFile(fullPath, `${fm}\n\n${content.trim()}\n`, 'utf-8');
     await this.appendLog('patch', `${pagePath} — ${frontmatter.title} ⟫ ${applied.join(', ')}`);
     await this.updateIndex();
+    await this.gitCommit(fullPath, `patch: ${pagePath} — ${applied.join(', ')}`);
 
     return { success: true, applied };
   }
@@ -412,9 +456,46 @@ class WikiService {
       await unlink(fullPath);
       await this.appendLog('delete', pagePath);
       await this.updateIndex();
+      await this.gitCommitDelete(fullPath, `delete: ${pagePath}`);
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async getPageHistory(pagePath: string, limit = 30): Promise<WikiHistoryEntry[]> {
+    try {
+      await this.gitReady;
+      const relPath = pagePath.replace(/\\/g, '/') + '.md';
+      const log = await this.git.log({ maxCount: limit, file: relPath, '--follow': null });
+      return log.all.map((e) => ({
+        hash: e.hash,
+        hashShort: e.hash.substring(0, 7),
+        date: e.date,
+        message: e.message,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async getPageVersion(pagePath: string, commitHash: string): Promise<string | null> {
+    try {
+      await this.gitReady;
+      const relPath = pagePath.replace(/\\/g, '/') + '.md';
+      return await this.git.show([`${commitHash}:${relPath}`]);
+    } catch {
+      return null;
+    }
+  }
+
+  async getPageDiff(pagePath: string, fromHash: string, toHash: string): Promise<string> {
+    try {
+      await this.gitReady;
+      const relPath = pagePath.replace(/\\/g, '/') + '.md';
+      return await this.git.diff([fromHash, toHash, '--', relPath]);
+    } catch {
+      return '';
     }
   }
 
@@ -680,6 +761,224 @@ class WikiService {
       .map(([title, paths]) => `"${title}": ${paths.join(', ')}`);
 
     return { orphanPages, brokenLinks, duplicateTitles };
+  }
+
+  /* ── Related Pages ──────────────────────────────── */
+
+  async getRelatedPages(pagePath: string, limit = 8): Promise<{
+    path: string;
+    title: string;
+    score: number;
+    reasons: string[];
+  }[]> {
+    const page = await this.readPage(pagePath);
+    if (!page) return [];
+
+    const allPages = await this.listPages();
+    const graph = await this.getGraph();
+
+    const pageTags = new Set(page.frontmatter.tags ?? []);
+    const pageSources = new Set(page.frontmatter.sources ?? []);
+    const pageCategory = pagePath.includes('/') ? pagePath.split('/')[0] : '';
+
+    const backlinksSet = new Set<string>();
+    const outlinksSet = new Set<string>();
+    for (const edge of graph.edges) {
+      if (edge.target === pagePath) backlinksSet.add(edge.source);
+      if (edge.source === pagePath && !edge.target.startsWith('#')) outlinksSet.add(edge.target);
+    }
+
+    const twoHopSet = new Set<string>();
+    for (const neighbor of [...backlinksSet, ...outlinksSet]) {
+      for (const edge of graph.edges) {
+        if (edge.source === neighbor && !edge.target.startsWith('#')) twoHopSet.add(edge.target);
+        if (edge.target === neighbor && !edge.source.startsWith('#')) twoHopSet.add(edge.source);
+      }
+    }
+    twoHopSet.delete(pagePath);
+
+    const directLinks = new Set([...backlinksSet, ...outlinksSet]);
+
+    const scored: { path: string; title: string; score: number; reasons: string[] }[] = [];
+
+    for (const p of allPages) {
+      if (p.path === pagePath) continue;
+      if (p.path === 'index' || p.path === 'log') continue;
+      if (directLinks.has(p.path)) continue;
+
+      let score = 0;
+      const reasons: string[] = [];
+
+      const otherTags = new Set(p.frontmatter.tags ?? []);
+      const sharedTags = [...pageTags].filter((t) => otherTags.has(t));
+      if (sharedTags.length > 0) {
+        score += sharedTags.length * 3;
+        reasons.push(`공유 태그: ${sharedTags.join(', ')}`);
+      }
+
+      const otherSources = new Set(p.frontmatter.sources ?? []);
+      const sharedSources = [...pageSources].filter((s) => otherSources.has(s));
+      if (sharedSources.length > 0) {
+        score += sharedSources.length * 4;
+        reasons.push(`공유 소스: ${sharedSources.length}개`);
+      }
+
+      if (twoHopSet.has(p.path)) {
+        score += 2;
+        reasons.push('2-hop 연결');
+      }
+
+      const otherCategory = p.path.includes('/') ? p.path.split('/')[0] : '';
+      if (pageCategory && otherCategory === pageCategory) {
+        score += 1;
+        reasons.push(`같은 카테고리: ${pageCategory}`);
+      }
+
+      if (score > 0) {
+        scored.push({ path: p.path, title: p.frontmatter.title, score, reasons });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit);
+  }
+
+  /* ── Impact Analysis ───────────────────────────── */
+
+  async getImpactAnalysis(pagePath: string): Promise<{
+    referencingPages: {
+      path: string;
+      title: string;
+      updated: string | null;
+      isEmbed: boolean;
+      stale: boolean;
+    }[];
+    currentUpdated: string | null;
+    staleCount: number;
+    totalReferences: number;
+  }> {
+    const page = await this.readPage(pagePath);
+    if (!page) return { referencingPages: [], currentUpdated: null, staleCount: 0, totalReferences: 0 };
+
+    const currentUpdated = page.frontmatter.updated ?? page.frontmatter.created ?? null;
+    const allPages = await this.listPages();
+    const referencingPages: {
+      path: string;
+      title: string;
+      updated: string | null;
+      isEmbed: boolean;
+      stale: boolean;
+    }[] = [];
+
+    for (const p of allPages) {
+      if (p.path === pagePath) continue;
+      const full = await this.readPage(p.path);
+      if (!full) continue;
+
+      const wikilinks = [...full.content.matchAll(/(!?)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)];
+      const references = wikilinks.filter((m) => m[2].trim() === pagePath);
+      if (references.length === 0) continue;
+
+      const isEmbed = references.some((m) => m[1] === '!');
+      const refUpdated = p.frontmatter.updated ?? p.frontmatter.created ?? null;
+
+      let stale = false;
+      if (!isEmbed && currentUpdated && refUpdated) {
+        stale = refUpdated < currentUpdated;
+      }
+
+      referencingPages.push({
+        path: p.path,
+        title: p.frontmatter.title,
+        updated: refUpdated,
+        isEmbed,
+        stale,
+      });
+    }
+
+    const staleCount = referencingPages.filter((r) => r.stale).length;
+
+    return {
+      referencingPages,
+      currentUpdated,
+      staleCount,
+      totalReferences: referencingPages.length,
+    };
+  }
+
+  /* ── Gap Discovery ─────────────────────────────── */
+
+  async discoverGaps(dataTableNames?: string[]): Promise<{
+    undocumentedTables: string[];
+    orphanPages: string[];
+    brokenLinks: string[];
+    stalePages: { path: string; title: string; updated: string; daysAgo: number }[];
+    isolatedPages: { path: string; title: string; tags: string[] }[];
+  }> {
+    const lintResult = await this.lint();
+    const allPages = await this.listPages();
+    const now = Date.now();
+    const STALE_DAYS = 30;
+
+    const documentedSources = new Set<string>();
+    const graph = await this.getGraph();
+
+    const incomingLinks = new Set<string>();
+    const outgoingLinks = new Set<string>();
+    for (const edge of graph.edges) {
+      if (!edge.target.startsWith('#')) incomingLinks.add(edge.target);
+      if (!edge.source.startsWith('#')) outgoingLinks.add(edge.source);
+    }
+
+    const stalePages: { path: string; title: string; updated: string; daysAgo: number }[] = [];
+    const isolatedPages: { path: string; title: string; tags: string[] }[] = [];
+
+    for (const p of allPages) {
+      if (p.path === 'index' || p.path === 'log') continue;
+
+      if (p.frontmatter.sources) {
+        for (const src of p.frontmatter.sources) {
+          documentedSources.add(src);
+        }
+      }
+
+      const updated = p.frontmatter.updated ?? p.frontmatter.created;
+      if (updated) {
+        const daysAgo = Math.floor((now - new Date(updated).getTime()) / (1000 * 60 * 60 * 24));
+        if (daysAgo >= STALE_DAYS) {
+          stalePages.push({ path: p.path, title: p.frontmatter.title, updated, daysAgo });
+        }
+      }
+
+      const hasTags = (p.frontmatter.tags ?? []).length > 0;
+      const full = await this.readPage(p.path);
+      const wikilinksInPage = full ? [...full.content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)] : [];
+      const hasOutgoingWikilinks = wikilinksInPage.length > 0;
+      const hasIncomingLinks = incomingLinks.has(p.path);
+      if (hasTags && !hasOutgoingWikilinks && !hasIncomingLinks) {
+        isolatedPages.push({ path: p.path, title: p.frontmatter.title, tags: p.frontmatter.tags ?? [] });
+      }
+    }
+
+    const undocumentedTables: string[] = [];
+    if (dataTableNames && dataTableNames.length > 0) {
+      for (const tbl of dataTableNames) {
+        const sourceKey = `table:${tbl}`;
+        if (!documentedSources.has(sourceKey)) {
+          undocumentedTables.push(tbl);
+        }
+      }
+    }
+
+    stalePages.sort((a, b) => b.daysAgo - a.daysAgo);
+
+    return {
+      undocumentedTables,
+      orphanPages: lintResult.orphanPages.filter((p) => p !== 'index' && p !== 'log'),
+      brokenLinks: lintResult.brokenLinks,
+      stalePages,
+      isolatedPages,
+    };
   }
 
   private async walkDir(dir: string, callback: (filePath: string) => Promise<void>): Promise<void> {

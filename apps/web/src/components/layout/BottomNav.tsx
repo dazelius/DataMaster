@@ -16,25 +16,27 @@ export function BottomNav() {
           key={item.to}
           to={item.to}
           className={({ isActive }) =>
-            `relative flex flex-1 flex-col items-center justify-center gap-0.5 transition-colors ${
+            `relative flex flex-1 flex-col items-center justify-center gap-0.5 transition-colors active:scale-95 ${
               isActive ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)]'
             }`
           }
         >
-          <div className="relative">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-            </svg>
-            {item.to === '/wiki' && wikiStats.recentCount > 0 && (
-              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-[var(--color-surface-1)]" />
-            )}
-            {item.to === '/wiki' && wikiStats.totalPages > 0 && wikiStats.recentCount === 0 && (
-              <span className="absolute -top-1.5 -right-2.5 min-w-[16px] rounded-full bg-[var(--color-surface-3)] px-1 py-0.5 text-center text-[8px] font-bold leading-none text-[var(--color-text-secondary)]">
-                {wikiStats.totalPages}
-              </span>
-            )}
-          </div>
-          <span className="text-[10px] font-medium">{item.label}</span>
+          {({ isActive }) => (
+            <>
+              {isActive && (
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-[var(--color-accent)]" />
+              )}
+              <div className="relative">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={isActive ? 2 : 1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                </svg>
+                {item.to === '/wiki' && wikiStats.recentCount > 0 && (
+                  <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-[var(--color-surface-1)]" />
+                )}
+              </div>
+              <span className={`text-[10px] ${isActive ? 'font-semibold' : 'font-medium'}`}>{item.label}</span>
+            </>
+          )}
         </NavLink>
       ))}
     </nav>

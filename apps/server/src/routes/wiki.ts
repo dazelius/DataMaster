@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { wikiService } from '../services/wiki/wikiService.js';
+import { getCachedData } from '../services/data/dataService.js';
 
 export async function wikiRoutes(app: FastifyInstance) {
   app.get('/pages', async (req: FastifyRequest<{ Querystring: { category?: string } }>) => {
@@ -58,6 +59,36 @@ export async function wikiRoutes(app: FastifyInstance) {
     return { results };
   });
 
+  app.get('/history/*', async (req, reply) => {
+    const raw = (req.params as Record<string, string>)['*'];
+    if (!raw) return reply.status(400).send({ error: 'Page path required' });
+
+    const parts = raw.split('/');
+    const lastPart = parts[parts.length - 1];
+    const isHash = /^[0-9a-f]{7,40}$/.test(lastPart);
+
+    if (isHash) {
+      const pagePath = parts.slice(0, -1).join('/');
+      const content = await wikiService.getPageVersion(pagePath, lastPart);
+      if (content === null) return reply.status(404).send({ error: 'Version not found' });
+      return { hash: lastPart, content };
+    }
+
+    const pagePath = raw;
+    const history = await wikiService.getPageHistory(pagePath);
+    return { path: pagePath, history };
+  });
+
+  app.get<{ Querystring: { from: string; to: string } }>('/diff/*', async (req, reply) => {
+    const pagePath = (req.params as Record<string, string>)['*'];
+    if (!pagePath) return reply.status(400).send({ error: 'Page path required' });
+    const { from, to } = req.query;
+    if (!from || !to) return reply.status(400).send({ error: 'from and to hash required' });
+
+    const diff = await wikiService.getPageDiff(pagePath, from, to);
+    return { path: pagePath, from, to, diff };
+  });
+
   app.get('/graph', async () => {
     const graph = await wikiService.getGraph();
     return graph;
@@ -66,5 +97,28 @@ export async function wikiRoutes(app: FastifyInstance) {
   app.post('/lint', async () => {
     const result = await wikiService.lint();
     return result;
+  });
+
+  app.get('/related/*', async (req, reply) => {
+    const pagePath = (req.params as Record<string, string>)['*'];
+    if (!pagePath) return reply.status(400).send({ error: 'Page path required' });
+    const related = await wikiService.getRelatedPages(pagePath);
+    return { related };
+  });
+
+  app.get('/impact/*', async (req, reply) => {
+    const pagePath = (req.params as Record<string, string>)['*'];
+    if (!pagePath) return reply.status(400).send({ error: 'Page path required' });
+    const impact = await wikiService.getImpactAnalysis(pagePath);
+    return impact;
+  });
+
+  app.get('/gaps', async () => {
+    const data = getCachedData();
+    const tableNames = data
+      ? data.dataFiles.flatMap((f) => f.sheets.map((s) => s.name))
+      : [];
+    const gaps = await wikiService.discoverGaps(tableNames);
+    return gaps;
   });
 }

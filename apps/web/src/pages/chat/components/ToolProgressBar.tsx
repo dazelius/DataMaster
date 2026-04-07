@@ -287,34 +287,91 @@ function ToolItem({ tool, compact }: { tool: ToolCall; compact?: boolean }) {
   );
 }
 
+function CompactToolChip({ tool }: { tool: ToolCall }) {
+  const isWiki = WIKI_TOOLS.has(tool.name);
+  const isError = tool.status === 'error';
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+      isError ? 'bg-red-500/10 text-red-400' :
+      isWiki ? 'bg-purple-500/10 text-purple-300' :
+      'bg-[var(--color-surface-0)] text-[var(--color-text-muted)]'
+    }`}>
+      {isError ? (
+        <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      ) : isWiki ? (
+        <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+      ) : (
+        <svg className="w-2.5 h-2.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+        </svg>
+      )}
+      {getToolLabel(tool.name)}
+    </span>
+  );
+}
+
+function groupTools(tools: ToolCall[]): { name: string; count: number; tool: ToolCall }[] {
+  const map = new Map<string, { count: number; tool: ToolCall }>();
+  for (const t of tools) {
+    const existing = map.get(t.name);
+    if (existing) {
+      existing.count++;
+    } else {
+      map.set(t.name, { count: 1, tool: t });
+    }
+  }
+  return Array.from(map.entries()).map(([name, v]) => ({ name, ...v }));
+}
+
 export function ToolProgressBar({ tools, collapsed: initialCollapsed }: ToolProgressBarProps) {
   const [expanded, setExpanded] = useState(!initialCollapsed);
-
-  useEffect(() => {
-    if (!initialCollapsed) setExpanded(true);
-  }, [initialCollapsed]);
-
-  if (tools.length === 0) return null;
+  const prevAllDoneRef = useRef(false);
 
   const activeCount = tools.filter((t) => t.status === 'running' || t.status === 'generating').length;
   const doneCount = tools.filter((t) => t.status === 'done').length;
   const totalCount = tools.length;
   const hasRunning = activeCount > 0;
-  const allDone = !hasRunning && doneCount === totalCount;
+  const allDone = !hasRunning && doneCount === totalCount && totalCount > 0;
 
+  useEffect(() => {
+    if (!initialCollapsed) setExpanded(true);
+  }, [initialCollapsed]);
+
+  // Auto-collapse when all tools finish
+  useEffect(() => {
+    if (allDone && !prevAllDoneRef.current) {
+      const timer = setTimeout(() => setExpanded(false), 1500);
+      prevAllDoneRef.current = true;
+      return () => clearTimeout(timer);
+    }
+    if (!allDone) prevAllDoneRef.current = false;
+  }, [allDone]);
+
+  if (tools.length === 0) return null;
+
+  // Collapsed compact view
   if (allDone && !expanded) {
+    const grouped = groupTools(tools);
     return (
       <div className="flex gap-3 px-4 md:px-6 py-1 animate-in fade-in duration-200">
         <div className="w-7 flex-shrink-0" />
         <button
           onClick={() => setExpanded(true)}
-          className="flex items-center gap-1.5 rounded-full bg-[var(--color-surface-2)] px-3 py-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
+          className="flex items-center gap-1.5 flex-wrap rounded-xl bg-[var(--color-surface-2)] px-3 py-1.5 text-[10px] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-3)] transition-colors"
         >
-          <svg className="w-3 h-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <svg className="w-3 h-3 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
-          {totalCount}개 도구 완료
-          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          {grouped.map((g) => (
+            <span key={g.name} className={`inline-flex items-center gap-0.5 ${WIKI_TOOLS.has(g.name) ? 'text-purple-300/70' : 'text-[var(--color-text-muted)]'}`}>
+              {getToolLabel(g.name)}{g.count > 1 && <span className="text-[9px] opacity-60">×{g.count}</span>}
+            </span>
+          ))}
+          <svg className="w-2.5 h-2.5 opacity-40 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </button>
@@ -351,29 +408,39 @@ export function ToolProgressBar({ tools, collapsed: initialCollapsed }: ToolProg
         </div>
 
         {/* Progress bar */}
-        <div className="relative h-1 rounded-full bg-[var(--color-surface-0)] mb-2.5 overflow-hidden">
-          <div
-            className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out ${allDone ? 'bg-green-500' : 'bg-[var(--color-accent)]'}`}
-            style={{ width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%` }}
-          />
-          {hasRunning && (
+        {!allDone && (
+          <div className="relative h-1 rounded-full bg-[var(--color-surface-0)] mb-2.5 overflow-hidden">
             <div
-              className="absolute inset-y-0 rounded-full bg-[var(--color-accent)] opacity-40"
-              style={{
-                left: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%`,
-                width: `${totalCount > 0 ? (1 / totalCount) * 100 : 0}%`,
-                animation: 'pulse 1.5s ease-in-out infinite',
-              }}
+              className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out ${allDone ? 'bg-green-500' : 'bg-[var(--color-accent)]'}`}
+              style={{ width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%` }}
             />
-          )}
-        </div>
+            {hasRunning && (
+              <div
+                className="absolute inset-y-0 rounded-full bg-[var(--color-accent)] opacity-40"
+                style={{
+                  left: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%`,
+                  width: `${totalCount > 0 ? (1 / totalCount) * 100 : 0}%`,
+                  animation: 'pulse 1.5s ease-in-out infinite',
+                }}
+              />
+            )}
+          </div>
+        )}
 
-        {/* Tool items */}
-        <div className="space-y-1">
-          {tools.map((tool, i) => (
-            <ToolItem key={`${tool.name}-${i}`} tool={tool} compact={allDone} />
-          ))}
-        </div>
+        {/* Tool items — compact chips when done, full list when running */}
+        {allDone ? (
+          <div className="flex flex-wrap gap-1">
+            {tools.map((tool, i) => (
+              <CompactToolChip key={`${tool.name}-${i}`} tool={tool} />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {tools.map((tool, i) => (
+              <ToolItem key={`${tool.name}-${i}`} tool={tool} compact={allDone} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
