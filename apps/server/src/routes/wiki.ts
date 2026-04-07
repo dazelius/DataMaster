@@ -89,6 +89,16 @@ export async function wikiRoutes(app: FastifyInstance) {
     return { path: pagePath, from, to, diff };
   });
 
+  app.post('/revert/*', async (req, reply) => {
+    const pagePath = (req.params as Record<string, string>)['*'];
+    if (!pagePath) return reply.status(400).send({ error: 'Page path required' });
+    const { commitHash } = req.body as { commitHash: string };
+    if (!commitHash) return reply.status(400).send({ error: 'commitHash required' });
+    const result = await wikiService.revertPage(pagePath, commitHash);
+    if (!result.success) return reply.status(404).send(result);
+    return result;
+  });
+
   app.get('/graph', async () => {
     const graph = await wikiService.getGraph();
     return graph;

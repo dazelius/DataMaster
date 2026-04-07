@@ -37,6 +37,8 @@ function registerRepos() {
         '*.shader', '*.hlsl', '*.cginc', '*.compute',
         '*.asmdef', '*.asmref', '*.proto',
         '*.png',
+        '*.asset', '*.prefab', '*.meta',
+        '*.anim', '*.controller', '*.overrideController',
       ],
     });
   }

@@ -37,6 +37,309 @@ export function getToolDefinitions(): { name: string; description: string; input
 
 // --- Register built-in tools ---
 
+// ── Reverse FK Lookup ──────────────────────────────
+
+registerTool({
+  name: 'reverse_fk_lookup',
+  description: 'Find all tables/columns that reference a given value. Scans every table in the game data cache for rows where any column matches the specified value. Essential for tracing ID references across tables (e.g., which tables use Passive ID 20011). Returns matching table, column, row count, and sample context.',
+  inputSchema: z.object({
+    value: z.union([z.string(), z.number()]),
+    sourceTable: z.string().optional(),
+    sourceColumn: z.string().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      value: { type: ['string', 'number'], description: 'The value to search for across all tables (typically an ID)' },
+      sourceTable: { type: 'string', description: 'Optional: source table name (for context in results)' },
+      sourceColumn: { type: 'string', description: 'Optional: source column name (for context)' },
+    },
+    required: ['value'],
+  },
+  async execute(input) {
+    const { value, sourceTable, sourceColumn } = input as { value: string | number; sourceTable?: string; sourceColumn?: string };
+    const { getCachedData } = await import('../data/dataService.js');
+    const data = getCachedData();
+    if (!data) return 'No game data loaded';
+
+    const searchVal = String(value);
+    const numVal = Number(value);
+    const isNum = !isNaN(numVal);
+
+    const results: { table: string; column: string; matchCount: number; sampleRows: Record<string, unknown>[] }[] = [];
+
+    for (const file of data.dataFiles) {
+      for (const sheet of file.sheets) {
+        if (sheet.rows.length === 0) continue;
+
+        const columnHits = new Map<string, Record<string, unknown>[]>();
+
+        for (const row of sheet.rows) {
+          for (const col of sheet.headers) {
+            const cell = row[col];
+            if (cell == null) continue;
+
+            const matched = isNum
+              ? (cell === numVal || cell === searchVal || String(cell) === searchVal)
+              : (String(cell) === searchVal);
+
+            if (matched) {
+              if (!columnHits.has(col)) columnHits.set(col, []);
+              const arr = columnHits.get(col)!;
+              if (arr.length < 3) arr.push(row);
+            }
+          }
+        }
+
+        for (const [col, rows] of columnHits) {
+          if (sourceTable && sheet.name === sourceTable && col === (sourceColumn ?? 'id')) continue;
+          results.push({
+            table: sheet.name,
+            column: col,
+            matchCount: rows.length < 3 ? rows.length : sheet.rows.filter((r) => {
+              const c = r[col];
+              return isNum ? (c === numVal || c === searchVal || String(c) === searchVal) : String(c) === searchVal;
+            }).length,
+            sampleRows: rows.map((r) => {
+              const sample: Record<string, unknown> = {};
+              const keys = Object.keys(r).slice(0, 6);
+              for (const k of keys) sample[k] = r[k];
+              return sample;
+            }),
+          });
+        }
+      }
+    }
+
+    results.sort((a, b) => b.matchCount - a.matchCount);
+    const src = sourceTable ? ` (source: ${sourceTable}.${sourceColumn ?? 'id'})` : '';
+    return JSON.stringify({ value, references: results.slice(0, 30), totalMatches: results.length, note: `Found ${results.length} column(s) referencing value ${value}${src}` });
+  },
+});
+
+// ── Data Change Impact ─────────────────────────────
+
+registerTool({
+  name: 'data_change_impact',
+  description: 'Analyze which wiki pages would be affected by changes to a specific data table. Scans wiki pages for :::query blocks containing the table name and frontmatter sources referencing the table. Optionally checks for specific changed IDs.',
+  inputSchema: z.object({
+    table: z.string(),
+    changed_ids: z.array(z.union([z.string(), z.number()])).optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      table: { type: 'string', description: 'Data table name that changed' },
+      changed_ids: { type: 'array', items: { type: ['string', 'number'] }, description: 'Optional: specific IDs that changed' },
+    },
+    required: ['table'],
+  },
+  async execute(input) {
+    const { table, changed_ids } = input as { table: string; changed_ids?: (string | number)[] };
+    const { wikiService } = await import('../wiki/wikiService.js');
+
+    const pages = await wikiService.listPages();
+    const affected: { path: string; title: string; reasons: string[] }[] = [];
+
+    const tablePattern = new RegExp(`\\b${table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const idStrings = changed_ids?.map(String) ?? [];
+
+    for (const page of pages) {
+      const full = await wikiService.readPage(page.path);
+      if (!full) continue;
+
+      const reasons: string[] = [];
+
+      if (full.frontmatter.sources) {
+        for (const src of full.frontmatter.sources) {
+          if (src.toLowerCase().includes(`table:${table.toLowerCase()}`)) {
+            reasons.push(`sources: ${src}`);
+          }
+        }
+      }
+
+      const queryBlocks = [...full.content.matchAll(/:::query\s*\n([\s\S]*?):::/g)];
+      for (const block of queryBlocks) {
+        const sql = block[1].trim();
+        if (tablePattern.test(sql)) {
+          let detail = `:::query 블록에서 ${table} 참조`;
+          if (idStrings.length > 0) {
+            const matchedIds = idStrings.filter((id) => sql.includes(id));
+            if (matchedIds.length > 0) detail += ` (ID: ${matchedIds.join(', ')})`;
+          }
+          reasons.push(detail);
+        }
+      }
+
+      if (full.content.match(tablePattern) && reasons.length === 0) {
+        reasons.push(`본문에서 ${table} 언급`);
+      }
+
+      if (reasons.length > 0) {
+        affected.push({ path: page.path, title: full.frontmatter.title, reasons });
+      }
+    }
+
+    return JSON.stringify({ table, changed_ids: changed_ids ?? [], affected_pages: affected, total: affected.length });
+  },
+});
+
+// ── Confluence Config Extractor ────────────────────
+
+registerTool({
+  name: 'confluence_extract_config',
+  description: 'Extract structured configuration data from a Confluence page. Parses key-value pairs (e.g., "setting_name = 100"), pipe-delimited tables, and enumeration lists from the page body text. Useful for extracting game design parameters from spec documents.',
+  inputSchema: z.object({ pageId: z.string() }),
+  claudeSchema: {
+    type: 'object',
+    properties: { pageId: { type: 'string', description: 'Confluence page ID' } },
+    required: ['pageId'],
+  },
+  async execute(input) {
+    const { pageId } = input as { pageId: string };
+    const { confluenceService } = await import('../atlassian/confluenceService.js');
+    const page = await confluenceService.getPage(pageId);
+    const body = page.body;
+    const lines = body.split('\n');
+
+    const configValues: { key: string; value: string | number; context: string }[] = [];
+    const tables: { headers: string[]; rows: string[][] }[] = [];
+    const enums: { name: string; values: string[] }[] = [];
+
+    // Key-value extraction: key = value, key: value, key → value
+    const kvPattern = /([a-zA-Z_][a-zA-Z0-9_.]*)\s*[=:→]\s*([-]?\d+(?:\.\d+)?|true|false|"[^"]*")/g;
+    for (let i = 0; i < lines.length; i++) {
+      let match;
+      while ((match = kvPattern.exec(lines[i])) !== null) {
+        const key = match[1];
+        const rawVal = match[2];
+        const numVal = Number(rawVal);
+        const value = rawVal === 'true' || rawVal === 'false' ? rawVal : (!isNaN(numVal) ? numVal : rawVal.replace(/^"|"$/g, ''));
+        const contextStart = Math.max(0, i - 1);
+        const contextEnd = Math.min(lines.length - 1, i + 1);
+        const context = lines.slice(contextStart, contextEnd + 1).join(' ').substring(0, 200);
+        configValues.push({ key, value, context });
+      }
+    }
+
+    // Table extraction: pipe-delimited rows
+    let tableRows: string[][] = [];
+    let tableHeaders: string[] = [];
+    for (const line of lines) {
+      if (line.includes('|') && line.trim().split('|').filter(Boolean).length >= 2) {
+        const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+        if (tableHeaders.length === 0) {
+          tableHeaders = cells;
+        } else {
+          tableRows.push(cells);
+        }
+      } else if (tableHeaders.length > 0) {
+        if (tableRows.length > 0) {
+          tables.push({ headers: tableHeaders, rows: tableRows });
+        }
+        tableHeaders = [];
+        tableRows = [];
+      }
+    }
+    if (tableHeaders.length > 0 && tableRows.length > 0) {
+      tables.push({ headers: tableHeaders, rows: tableRows });
+    }
+
+    // Enum-like lists: numbered items or dash-prefixed items under a heading
+    const enumPattern = /(?:^|\n)([A-Z][A-Za-z0-9_ ]*(?:Type|Mode|State|Category|Kind|Enum))\s*[:\n]/g;
+    let enumMatch;
+    while ((enumMatch = enumPattern.exec(body)) !== null) {
+      const startIdx = enumMatch.index + enumMatch[0].length;
+      const slice = body.substring(startIdx, startIdx + 500);
+      const items = [...slice.matchAll(/^[-•*\d.)\s]+(.+)/gm)].map((m) => m[1].trim()).filter((v) => v.length > 0 && v.length < 100);
+      if (items.length >= 2) {
+        enums.push({ name: enumMatch[1].trim(), values: items.slice(0, 20) });
+      }
+    }
+
+    return JSON.stringify({
+      pageId,
+      title: page.title,
+      config_values: configValues,
+      tables: tables.slice(0, 10),
+      enums,
+      summary: `Extracted ${configValues.length} config values, ${tables.length} tables, ${enums.length} enums from "${page.title}"`,
+    });
+  },
+});
+
+// ── Wiki Dependency Graph Query ────────────────────
+
+registerTool({
+  name: 'wiki_dependency_graph',
+  description: 'Query the wiki dependency graph for a specific page. Shows which pages link to it (inbound), which pages it links to (outbound), and distinguishes between regular [[wikilinks]] and ![[embeds]]. Useful for impact analysis before modifying a page.',
+  inputSchema: z.object({
+    path: z.string(),
+    direction: z.enum(['inbound', 'outbound', 'both']).optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Wiki page path (e.g., "entities/kaya")' },
+      direction: { type: 'string', enum: ['inbound', 'outbound', 'both'], description: 'Direction to query (default: both)' },
+    },
+    required: ['path'],
+  },
+  async execute(input) {
+    const { path, direction = 'both' } = input as { path: string; direction?: string };
+    const { wikiService } = await import('../wiki/wikiService.js');
+    const graph = await wikiService.getGraph();
+    const pages = await wikiService.listPages();
+
+    const linked_by: string[] = [];
+    const embedded_by: string[] = [];
+    const links_to: string[] = [];
+    const embeds: string[] = [];
+
+    if (direction === 'inbound' || direction === 'both') {
+      const inbound = graph.edges.filter((e) => e.target === path && !e.source.startsWith('#'));
+      for (const edge of inbound) {
+        const srcPage = await wikiService.readPage(edge.source);
+        if (!srcPage) { linked_by.push(edge.source); continue; }
+        const embedPattern = new RegExp(`!\\[\\[${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\|[^\\]]+)?\\]\\]`);
+        if (embedPattern.test(srcPage.content)) {
+          embedded_by.push(edge.source);
+        } else {
+          linked_by.push(edge.source);
+        }
+      }
+    }
+
+    if (direction === 'outbound' || direction === 'both') {
+      const currentPage = await wikiService.readPage(path);
+      if (currentPage) {
+        const wikilinks = [...currentPage.content.matchAll(/(!?)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)];
+        for (const m of wikilinks) {
+          const isEmbed = m[1] === '!';
+          const target = m[2].trim();
+          if (target.startsWith('#')) continue;
+          if (isEmbed) {
+            if (!embeds.includes(target)) embeds.push(target);
+          } else {
+            if (!links_to.includes(target)) links_to.push(target);
+          }
+        }
+      }
+    }
+
+    return JSON.stringify({
+      path,
+      direction,
+      embedded_by,
+      linked_by,
+      links_to,
+      embeds,
+      total_inbound: embedded_by.length + linked_by.length,
+      total_outbound: links_to.length + embeds.length,
+    });
+  },
+});
+
 registerTool({
   name: 'query_game_data',
   description: 'Execute a SQL query on game data tables. Returns actual query results as JSON. Use standard SQL syntax. Table names that are SQL reserved words use aliases (e.g., Level → __u_level). Max 50 rows returned.',
@@ -136,6 +439,154 @@ registerTool({
   },
 });
 
+registerTool({
+  name: 'data_diff_summary',
+  description: 'Compare game data (Excel) between two git commits and return structured row-level changes (added, removed, modified rows with old/new values). Useful for understanding exactly what changed in a data update. If only one commit is given, compares it against its parent.',
+  inputSchema: z.object({
+    commit: z.string().optional(),
+    parentCommit: z.string().optional(),
+    tables: z.array(z.string()).optional(),
+    limit: z.number().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      commit: { type: 'string', description: 'The newer commit hash. Default: HEAD (latest).' },
+      parentCommit: { type: 'string', description: 'The older commit hash. Default: parent of commit (commit~1).' },
+      tables: { type: 'array', items: { type: 'string' }, description: 'Filter to specific table/sheet names. Default: all.' },
+      limit: { type: 'number', description: 'Max changes per table. Default: 50.' },
+    },
+    required: [],
+  },
+  async execute(input) {
+    const { commit = 'HEAD', parentCommit, tables, limit = 50 } = input as {
+      commit?: string; parentCommit?: string; tables?: string[]; limit?: number;
+    };
+    const { execSync } = await import('child_process');
+    const { resolve } = await import('path');
+    const { config } = await import('../../config.js');
+    const { parseExcelBuffer } = await import('../data/excelParser.js');
+
+    const repoDir = resolve(config.GIT_CLONE_BASE_DIR, 'data');
+    const older = parentCommit || `${commit}~1`;
+
+    let changedFiles: string[];
+    try {
+      const raw = execSync(`git diff --name-only ${older} ${commit}`, { cwd: repoDir, encoding: 'utf-8' });
+      changedFiles = raw.trim().split('\n').filter((f) => /\.xlsx?$/i.test(f));
+    } catch {
+      return JSON.stringify({ error: 'Failed to get diff. Check commit hashes.', commit, older });
+    }
+
+    if (changedFiles.length === 0) {
+      return JSON.stringify({ message: 'No Excel data files changed between these commits.', commit, older });
+    }
+
+    interface RowChange {
+      type: 'added' | 'removed' | 'modified';
+      id: unknown;
+      changes?: { field: string; old: unknown; new: unknown }[];
+      row?: Record<string, unknown>;
+    }
+
+    const results: { file: string; table: string; added: number; removed: number; modified: number; details: RowChange[] }[] = [];
+
+    for (const filePath of changedFiles) {
+      let oldBuf: Buffer | null = null;
+      let newBuf: Buffer | null = null;
+
+      try {
+        oldBuf = execSync(`git show ${older}:"${filePath}"`, { cwd: repoDir, maxBuffer: 50 * 1024 * 1024 });
+      } catch { /* file didn't exist in older commit */ }
+
+      try {
+        newBuf = execSync(`git show ${commit}:"${filePath}"`, { cwd: repoDir, maxBuffer: 50 * 1024 * 1024 });
+      } catch { /* file deleted in newer commit */ }
+
+      const oldFile = oldBuf ? parseExcelBuffer(oldBuf, filePath) : null;
+      const newFile = newBuf ? parseExcelBuffer(newBuf, filePath) : null;
+
+      const allSheets = new Set([
+        ...(oldFile?.sheets.map((s) => s.name) ?? []),
+        ...(newFile?.sheets.map((s) => s.name) ?? []),
+      ]);
+
+      for (const sheetName of allSheets) {
+        if (tables && tables.length > 0 && !tables.some((t) => sheetName.toLowerCase().includes(t.toLowerCase()))) continue;
+
+        const oldSheet = oldFile?.sheets.find((s) => s.name === sheetName);
+        const newSheet = newFile?.sheets.find((s) => s.name === sheetName);
+
+        if (!oldSheet && !newSheet) continue;
+
+        const pkField = (newSheet ?? oldSheet)!.headers.find((h) => h.toLowerCase() === 'id') || (newSheet ?? oldSheet)!.headers[0];
+
+        const oldMap = new Map<string, Record<string, unknown>>();
+        if (oldSheet) {
+          for (const row of oldSheet.rows) {
+            const key = String(row[pkField] ?? '');
+            if (key) oldMap.set(key, row);
+          }
+        }
+
+        const newMap = new Map<string, Record<string, unknown>>();
+        if (newSheet) {
+          for (const row of newSheet.rows) {
+            const key = String(row[pkField] ?? '');
+            if (key) newMap.set(key, row);
+          }
+        }
+
+        const details: RowChange[] = [];
+        let added = 0, removed = 0, modified = 0;
+
+        for (const [key, newRow] of newMap) {
+          if (!oldMap.has(key)) {
+            added++;
+            if (details.length < limit) details.push({ type: 'added', id: newRow[pkField], row: newRow });
+          } else {
+            const oldRow = oldMap.get(key)!;
+            const changes: { field: string; old: unknown; new: unknown }[] = [];
+            const allFields = new Set([...Object.keys(oldRow), ...Object.keys(newRow)]);
+            for (const field of allFields) {
+              const ov = oldRow[field], nv = newRow[field];
+              if (String(ov ?? '') !== String(nv ?? '')) {
+                changes.push({ field, old: ov, new: nv });
+              }
+            }
+            if (changes.length > 0) {
+              modified++;
+              if (details.length < limit) details.push({ type: 'modified', id: newRow[pkField], changes });
+            }
+          }
+        }
+
+        for (const [key, oldRow] of oldMap) {
+          if (!newMap.has(key)) {
+            removed++;
+            if (details.length < limit) details.push({ type: 'removed', id: oldRow[pkField], row: oldRow });
+          }
+        }
+
+        if (added > 0 || removed > 0 || modified > 0) {
+          results.push({ file: filePath, table: sheetName, added, removed, modified, details });
+        }
+      }
+    }
+
+    if (results.length === 0) {
+      return JSON.stringify({ message: 'Excel files changed but no row-level differences detected.', changedFiles });
+    }
+
+    return JSON.stringify({
+      commit,
+      parentCommit: older,
+      changedFiles: changedFiles.length,
+      summary: results.map((r) => ({ table: r.table, added: r.added, removed: r.removed, modified: r.modified })),
+      details: results,
+    });
+  },
+});
 
 // --- Wiki Tools ---
 
@@ -331,14 +782,139 @@ registerTool({
   },
 });
 
+registerTool({
+  name: 'wiki_revert',
+  description: 'Revert a wiki page to a previous revision. Use when an edit has corrupted or accidentally wiped a page. First call with only the path to list available revisions, then call again with path + commitHash to perform the revert.',
+  inputSchema: z.object({
+    path: z.string(),
+    commitHash: z.string().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Wiki page path (e.g. "guides/analysis-methodology")' },
+      commitHash: { type: 'string', description: 'Commit hash to revert to. Omit to list available revisions first.' },
+    },
+    required: ['path'],
+  },
+  async execute(input) {
+    const { path, commitHash } = input as { path: string; commitHash?: string };
+    const { wikiService } = await import('../wiki/wikiService.js');
+
+    if (!commitHash) {
+      const history = await wikiService.getPageHistory(path, 15);
+      if (history.length === 0) return JSON.stringify({ success: false, error: `No revision history found for ${path}` });
+      return JSON.stringify({
+        success: true,
+        mode: 'list',
+        path,
+        revisions: history.map((h) => ({ hash: h.hashShort, date: h.date, message: h.message })),
+        hint: 'Pick a commitHash from the list and call wiki_revert again with it to restore.',
+      });
+    }
+
+    const result = await wikiService.revertPage(path, commitHash);
+    return JSON.stringify(result);
+  },
+});
+
+registerTool({
+  name: 'wiki_create_from_template',
+  description: `Create a wiki page from a predefined template. Generates a full page skeleton with :::query blocks, mermaid diagrams, and proper frontmatter. Available templates:
+- skill-analysis: 스킬 완전 분석 (Execute chain, status effects, strategy)
+- character-overview: 캐릭터 개요 (stats, gear, skill set)
+- concept-doc: 시스템/개념 허브 문서
+- weapon-analysis: 무기 심층 분석 (stats, projectile, DPS)
+- comparison-analysis: 비교 분석 페이지
+Call with only template_id to see required variables. Call with template_id + variables to generate the page.`,
+  inputSchema: z.object({
+    template_id: z.string(),
+    variables: z.record(z.string()).optional(),
+    path_override: z.string().optional(),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      template_id: { type: 'string', description: 'Template ID: skill-analysis, character-overview, concept-doc, weapon-analysis, comparison-analysis' },
+      variables: { type: 'object', description: 'Key-value map of template variables. Omit to see required variables.' },
+      path_override: { type: 'string', description: 'Optional custom wiki path. If omitted, auto-generated from template category + variables.' },
+    },
+    required: ['template_id'],
+  },
+  async execute(input) {
+    const { template_id, variables, path_override } = input as { template_id: string; variables?: Record<string, string>; path_override?: string };
+    const { getTemplate, listTemplates } = await import('../wiki/wikiTemplates.js');
+
+    if (template_id === 'list') {
+      const templates = listTemplates();
+      return JSON.stringify({ templates });
+    }
+
+    const tmpl = getTemplate(template_id);
+    if (!tmpl) {
+      const templates = listTemplates();
+      return JSON.stringify({ error: `Unknown template "${template_id}"`, available: templates.map((t) => t.id) });
+    }
+
+    if (!variables || Object.keys(variables).length === 0) {
+      return JSON.stringify({
+        template: tmpl.id,
+        label: tmpl.label,
+        description: tmpl.description,
+        category: tmpl.category,
+        variables: tmpl.variables.map((v) => ({
+          name: v.name,
+          label: v.label,
+          required: v.required,
+          example: v.example,
+        })),
+        hint: 'Provide variables to generate the page.',
+      });
+    }
+
+    const missing = tmpl.variables.filter((v) => v.required && !variables[v.name]);
+    if (missing.length > 0) {
+      return JSON.stringify({
+        error: 'Missing required variables',
+        missing: missing.map((v) => ({ name: v.name, label: v.label, example: v.example })),
+      });
+    }
+
+    const { frontmatter, content } = tmpl.generate(variables);
+
+    let pagePath = path_override;
+    if (!pagePath) {
+      const slugBase = variables.character_en?.toLowerCase()
+        || variables.slug
+        || variables.weapon_name_en?.toLowerCase().replace(/\s+/g, '-')
+        || 'untitled';
+      const slugSuffix = variables.skill_name_en?.toLowerCase().replace(/\s+/g, '-') || '';
+      pagePath = `${tmpl.category}/${slugSuffix ? `${slugBase}-${slugSuffix}` : slugBase}`;
+    }
+
+    const { wikiService } = await import('../wiki/wikiService.js');
+    await wikiService.writePage(pagePath, frontmatter, content);
+
+    return JSON.stringify({
+      success: true,
+      path: pagePath,
+      title: frontmatter.title,
+      template: tmpl.id,
+      message: `Created from template "${tmpl.label}". Fill in TODO sections with actual analysis.`,
+      todoCount: (content.match(/TODO/g) || []).length,
+    });
+  },
+});
+
 // --- StringData / Localization Tools ---
 
 registerTool({
   name: 'search_strings',
-  description: 'Search localization StringData from Google Sheets. Searches across all languages by key name or text content. Use for: finding string keys, checking translations, localization QA, missing translation detection.',
+  description: 'Search localization StringData from Google Sheets. Searches across all languages by key name or text content. Optionally filter by sheet name (e.g. UI, Skill, System) for more precise results. Use string_stats to see available sheet names first.',
   inputSchema: z.object({
     query: z.string(),
     lang: z.string().optional(),
+    sheet: z.string().optional(),
     limit: z.number().optional(),
   }),
   claudeSchema: {
@@ -346,13 +922,32 @@ registerTool({
     properties: {
       query: { type: 'string', description: 'Search text (matches key name and translation content)' },
       lang: { type: 'string', description: 'Filter by language column (e.g. "Korean", "English", "Portuguese")' },
+      sheet: { type: 'string', description: 'Filter by sheet name (e.g. "UI", "Skill", "System"). Use string_stats to see available sheets.' },
       limit: { type: 'number', description: 'Max results (default 50)' },
     },
     required: ['query'],
   },
   async execute(input) {
-    const { query, lang, limit } = input as { query: string; lang?: string; limit?: number };
-    const { searchStrings } = await import('../google/stringDataService.js');
+    const { query, lang, sheet, limit } = input as { query: string; lang?: string; sheet?: string; limit?: number };
+    const { searchStrings, getCachedStringData } = await import('../google/stringDataService.js');
+
+    if (sheet) {
+      const cached = getCachedStringData();
+      if (!cached) return JSON.stringify({ query, matchCount: 0, results: [], error: 'StringData not loaded' });
+      const targetSheet = cached.sheets.find((s) => s.sheetName.toLowerCase() === sheet.toLowerCase());
+      if (!targetSheet) return JSON.stringify({ query, matchCount: 0, results: [], error: `Sheet "${sheet}" not found. Available: ${cached.sheets.map((s) => s.sheetName).join(', ')}` });
+
+      const q = query.toLowerCase();
+      const maxLimit = limit ?? 50;
+      const results = targetSheet.entries.filter((entry) => {
+        if (entry.key.toLowerCase().includes(q)) return true;
+        if (lang) return (entry[lang] ?? '').toLowerCase().includes(q);
+        return Object.values(entry).some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
+      }).slice(0, maxLimit);
+
+      return JSON.stringify({ query, sheet: targetSheet.sheetName, matchCount: results.length, results });
+    }
+
     const results = searchStrings(query, lang, limit ?? 50);
     return JSON.stringify({ query, matchCount: results.length, results });
   },
@@ -412,7 +1007,7 @@ registerTool({
 
 registerTool({
   name: 'search_images',
-  description: 'Search for image assets (PNG) in the game code repository by keyword. File paths and names are matched against the query. Use to find character portraits, icons, UI elements, skill effects, etc. Returns image URLs that can be embedded in wiki pages with markdown ![alt](/api/assets/code/path).',
+  description: 'Search for image assets (PNG) in the game code repository by keyword. Returns image URLs, dimensions (width x height), and file size. Use to find character portraits, icons, UI elements, skill effects, etc. Embed in wiki: ![alt](/api/assets/code/path).',
   inputSchema: z.object({
     query: z.string(),
     limit: z.number().optional(),
@@ -429,7 +1024,7 @@ registerTool({
     const { query, limit } = input as { query: string; limit?: number };
     const { resolve } = await import('path');
     const { config } = await import('../../config.js');
-    const { readdir } = await import('fs/promises');
+    const { readdir, stat, open } = await import('fs/promises');
     const { join, extname } = await import('path');
 
     const codeBase = resolve(config.GIT_CLONE_BASE_DIR, 'code');
@@ -438,7 +1033,21 @@ registerTool({
 
     if (keywords.length === 0) return JSON.stringify({ images: [], total: 0 });
 
-    const images: { path: string; name: string; url: string }[] = [];
+    async function readPngDimensions(filePath: string): Promise<{ width: number; height: number } | null> {
+      let fh;
+      try {
+        fh = await open(filePath, 'r');
+        const buf = Buffer.alloc(24);
+        await fh.read(buf, 0, 24, 0);
+        if (buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+        const width = buf.readUInt32BE(16);
+        const height = buf.readUInt32BE(20);
+        return { width, height };
+      } catch { return null; }
+      finally { await fh?.close(); }
+    }
+
+    const images: { path: string; name: string; url: string; width: number | null; height: number | null; sizeKB: number }[] = [];
 
     async function walk(dir: string, rel: string) {
       let entries;
@@ -454,7 +1063,17 @@ registerTool({
           if (ext !== '.png') continue;
           const lower = childRel.toLowerCase();
           if (keywords.every((kw) => lower.includes(kw))) {
-            images.push({ path: childRel, name: entry.name, url: `/api/assets/code/${childRel}` });
+            const fullPath = join(dir, entry.name);
+            const dims = await readPngDimensions(fullPath);
+            const fileStat = await stat(fullPath).catch(() => null);
+            images.push({
+              path: childRel,
+              name: entry.name,
+              url: `/api/assets/code/${childRel}`,
+              width: dims?.width ?? null,
+              height: dims?.height ?? null,
+              sizeKB: fileStat ? Math.round(fileStat.size / 1024) : 0,
+            });
           }
         }
       }
@@ -469,59 +1088,107 @@ registerTool({
 
 registerTool({
   name: 'search_code',
-  description: 'Search for code files (C#, Lua, etc.) in the game code repository by keyword. Matches file names and paths. Returns matching file paths that can be read with read_code_file. Use to find game logic implementations, class definitions, scriptable objects, etc.',
+  description: 'Search for code files in the game code repository. By default matches file names/paths. With searchContent:true, also searches inside file contents (grep-style). Use content search to find class references, variable names, ScriptableObject references, function calls, etc.',
   inputSchema: z.object({
     query: z.string(),
     extension: z.string().optional(),
     limit: z.number().optional(),
+    searchContent: z.boolean().optional(),
   }),
   claudeSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Search keywords (e.g. "TacticalShield", "DamageCalc", "PlayerController"). Matches against file paths.' },
-      extension: { type: 'string', description: 'File extension filter (e.g. ".cs", ".lua"). Default: all code files.' },
+      query: { type: 'string', description: 'Search keywords. For path search: matches file paths. For content search: searches inside file text.' },
+      extension: { type: 'string', description: 'File extension filter (e.g. ".cs", ".lua", ".asset"). Default: all code files.' },
       limit: { type: 'number', description: 'Max results (default 30)' },
+      searchContent: { type: 'boolean', description: 'If true, search inside file contents (grep-style) instead of just file paths. Slower but finds references, class names, variables, etc.' },
     },
     required: ['query'],
   },
   async execute(input) {
-    const { query, extension, limit } = input as { query: string; extension?: string; limit?: number };
+    const { query, extension, limit, searchContent } = input as { query: string; extension?: string; limit?: number; searchContent?: boolean };
     const { resolve, join, extname } = await import('path');
     const { config } = await import('../../config.js');
-    const { readdir } = await import('fs/promises');
+    const { readdir, readFile } = await import('fs/promises');
 
     const codeBase = resolve(config.GIT_CLONE_BASE_DIR, 'code');
     const maxResults = Math.min(limit ?? 30, 100);
     const keywords = query.toLowerCase().split(/[\s_\-/\\]+/).filter(Boolean);
-    const codeExts = new Set(['.cs', '.lua', '.json', '.xml', '.yaml', '.yml', '.txt', '.cfg', '.ini', '.shader']);
+    const codeExts = new Set(['.cs', '.lua', '.json', '.xml', '.yaml', '.yml', '.txt', '.cfg', '.ini', '.shader', '.asset', '.prefab', '.meta']);
 
     if (keywords.length === 0) return JSON.stringify({ files: [], total: 0 });
 
-    const files: { path: string; name: string; ext: string }[] = [];
+    if (!searchContent) {
+      const files: { path: string; name: string; ext: string }[] = [];
+      async function walk(dir: string, rel: string) {
+        let entries;
+        try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+          if (files.length >= maxResults) return;
+          const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'Library') continue;
+            await walk(join(dir, entry.name), childRel);
+          } else {
+            const ext = extname(entry.name).toLowerCase();
+            if (extension && ext !== extension.toLowerCase()) continue;
+            if (!extension && !codeExts.has(ext)) continue;
+            const lower = childRel.toLowerCase();
+            if (keywords.every((kw) => lower.includes(kw))) {
+              files.push({ path: childRel, name: entry.name, ext });
+            }
+          }
+        }
+      }
+      await walk(codeBase, '');
+      return JSON.stringify({ query, mode: 'path', files, total: files.length });
+    }
 
-    async function walk(dir: string, rel: string) {
+    // Content search mode
+    const results: { path: string; name: string; matches: { line: number; text: string }[] }[] = [];
+    const queryLower = query.toLowerCase();
+    const MAX_FILE_SIZE = 512 * 1024;
+
+    async function walkContent(dir: string, rel: string) {
       let entries;
       try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
-        if (files.length >= maxResults) return;
+        if (results.length >= maxResults) return;
         const childRel = rel ? `${rel}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'Library') continue;
-          await walk(join(dir, entry.name), childRel);
+          await walkContent(join(dir, entry.name), childRel);
         } else {
           const ext = extname(entry.name).toLowerCase();
           if (extension && ext !== extension.toLowerCase()) continue;
           if (!extension && !codeExts.has(ext)) continue;
-          const lower = childRel.toLowerCase();
-          if (keywords.every((kw) => lower.includes(kw))) {
-            files.push({ path: childRel, name: entry.name, ext });
-          }
+
+          try {
+            const fullPath = join(dir, entry.name);
+            const { size } = await (await import('fs/promises')).stat(fullPath);
+            if (size > MAX_FILE_SIZE) continue;
+
+            const content = await readFile(fullPath, 'utf-8');
+            const lines = content.split('\n');
+            const matchLines: { line: number; text: string }[] = [];
+
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].toLowerCase().includes(queryLower)) {
+                matchLines.push({ line: i + 1, text: lines[i].trim().substring(0, 200) });
+                if (matchLines.length >= 5) break;
+              }
+            }
+
+            if (matchLines.length > 0) {
+              results.push({ path: childRel, name: entry.name, matches: matchLines });
+            }
+          } catch { /* skip unreadable files */ }
         }
       }
     }
 
-    await walk(codeBase, '');
-    return JSON.stringify({ query, files, total: files.length });
+    await walkContent(codeBase, '');
+    return JSON.stringify({ query, mode: 'content', results, total: results.length });
   },
 });
 

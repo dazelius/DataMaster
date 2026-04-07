@@ -37,6 +37,7 @@ export class GitService {
       await simpleGit().raw(opts);
 
       const git = simpleGit(localDir);
+      await git.raw(['config', 'core.longpaths', 'true']);
       await git.raw(['sparse-checkout', 'set', '--no-cone', ...sparsePatterns]);
       await git.raw(['checkout', branch ?? 'HEAD']);
       return;

@@ -27,6 +27,13 @@ export const TOOL_REGISTRY: ToolMeta[] = [
   { name: 'query_string_data', label: '스트링 쿼리', icon: '🌐', category: 'data' },
   { name: 'search_assets', label: '에셋 검색', icon: '🎨', category: 'asset' },
   { name: 'find_resource_image', label: '이미지 찾기', icon: '🖼️', category: 'asset' },
+  { name: 'reverse_fk_lookup', label: '역방향 참조', icon: '🔗', category: 'data' },
+  { name: 'data_change_impact', label: '변경 영향', icon: '💥', category: 'knowledge' },
+  { name: 'confluence_extract_config', label: '설정값 추출', icon: '📐', category: 'integration' },
+  { name: 'wiki_dependency_graph', label: '의존성 그래프', icon: '🕸️', category: 'knowledge' },
+  { name: 'wiki_revert', label: '위키 복구', icon: '⏪', category: 'knowledge' },
+  { name: 'wiki_create_from_template', label: '템플릿 생성', icon: '📝', category: 'knowledge' },
+  { name: 'data_diff_summary', label: '데이터 변경 비교', icon: '🔄', category: 'data' },
 ];
 
 export function getToolMeta(toolName: string): ToolMeta | undefined {

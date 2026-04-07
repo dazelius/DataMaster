@@ -13,6 +13,7 @@ import { api } from '../../lib/api';
 import { useWikiStats } from '../../hooks/useWikiStats';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { InlineChart, InlineStat, parseChartBlock, parseStatBlock } from '../../components/visualization';
+import { CodeBlock } from '../../components/common/CodeBlock';
 import { WikiGraphView } from '../../components/wiki/WikiGraphView';
 import { TableNode } from '../../components/canvas/TableNode';
 import { RelationEdge } from '../../components/canvas/RelationEdge';
@@ -33,6 +34,14 @@ mermaid.initialize({
     tertiaryColor: '#0f172a',
     fontFamily: 'inherit',
     fontSize: '13px',
+  },
+  flowchart: {
+    htmlLabels: true,
+    padding: 20,
+    nodeSpacing: 40,
+    rankSpacing: 50,
+    wrappingWidth: 250,
+    useMaxWidth: false,
   },
 });
 
@@ -942,7 +951,7 @@ function MermaidDiagram({ code }: { code: string }) {
   return (
     <div
       ref={containerRef}
-      className="my-4 flex justify-center overflow-x-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-0)] p-4"
+      className="my-4 overflow-x-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-0)] p-4 mermaid-container"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
@@ -1240,6 +1249,7 @@ function WikiEmbed({ pagePath, navigateToPage }: { pagePath: string; navigateToP
           <div className="text-[13px] text-[var(--color-text-secondary)] leading-relaxed wiki-embed-content">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
               p: ({ children }) => <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] mb-3">{children}</p>,
+              strong: ({ children }) => <strong className="font-semibold text-[var(--color-text-primary)]">{children}</strong>,
               h1: ({ children }) => <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mt-3 mb-2">{children}</h3>,
               h2: ({ children }) => <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mt-3 mb-2">{children}</h3>,
               h3: ({ children }) => <h4 className="text-[13px] font-semibold text-[var(--color-text-primary)] mt-2 mb-1">{children}</h4>,
@@ -1257,13 +1267,12 @@ function WikiEmbed({ pagePath, navigateToPage }: { pagePath: string; navigateToP
                   </a>
                 );
               },
-              code: ({ className, children, ...props }) => {
-                if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1 py-0.5 text-[12px] font-mono" {...props}>{children}</code>;
-                if (className === 'language-mermaid') {
-                  const raw = String(children).replace(/\n$/, '');
-                  return <MermaidDiagram code={raw} />;
-                }
-                return <pre className="rounded bg-[var(--color-surface-0)] border border-[var(--color-border)] p-3 overflow-x-auto text-[12px]"><code className={className} {...props}>{children}</code></pre>;
+              code: ({ className, children }) => {
+                if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1 py-0.5 text-[12px] font-mono">{children}</code>;
+                const raw = String(children).replace(/\n$/, '');
+                if (className === 'language-mermaid') return <MermaidDiagram code={raw} />;
+                const lang = className.replace('language-', '');
+                return <CodeBlock code={raw} language={lang} compact />;
               },
               table: ({ children }) => <div className="overflow-x-auto my-2"><table className="w-full text-xs border-collapse">{children}</table></div>,
               th: ({ children }) => <th className="border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-1 text-left text-[11px]">{children}</th>,
@@ -1371,17 +1380,12 @@ function WikiMarkdown({ content, navigateToPage, sectionChanges = [] }: { conten
                   </a>
                 );
               },
-              code: ({ className, children, ...props }) => {
-                if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-[13px] font-mono text-[var(--color-text-primary)]" {...props}>{children}</code>;
-                if (className === 'language-mermaid') {
-                  const raw = String(children).replace(/\n$/, '');
-                  return <MermaidDiagram code={raw} />;
-                }
-                return (
-                  <pre className="rounded-[var(--radius-lg)] bg-[var(--color-surface-0)] border border-[var(--color-border)] p-4 overflow-x-auto">
-                    <code className={`${className} text-[13px] font-mono`} {...props}>{children}</code>
-                  </pre>
-                );
+              code: ({ className, children }) => {
+                if (!className) return <code className="rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-[13px] font-mono text-[var(--color-text-primary)]">{children}</code>;
+                const raw = String(children).replace(/\n$/, '');
+                if (className === 'language-mermaid') return <MermaidDiagram code={raw} />;
+                const lang = className.replace('language-', '');
+                return <CodeBlock code={raw} language={lang} />;
               },
               table: ({ children }) => <div className="overflow-x-auto my-4"><table className="w-full text-sm border-collapse">{children}</table></div>,
               th: ({ children }) => <th className="border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2 text-left font-medium text-[var(--color-text-secondary)]">{children}</th>,
@@ -1420,6 +1424,8 @@ function WikiMarkdown({ content, navigateToPage, sectionChanges = [] }: { conten
                 );
               },
               p: ({ children }) => <p className="text-[14px] leading-relaxed text-[var(--color-text-secondary)] mb-4">{children}</p>,
+              strong: ({ children }) => <strong className="font-semibold text-[var(--color-text-primary)]">{children}</strong>,
+              em: ({ children }) => <em className="italic text-[var(--color-text-secondary)]">{children}</em>,
               ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-[14px] text-[var(--color-text-secondary)]">{children}</ul>,
               ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-[14px] text-[var(--color-text-secondary)]">{children}</ol>,
               blockquote: ({ children }) => <blockquote className="border-l-2 border-[var(--color-accent)] pl-4 my-4 text-[var(--color-text-muted)] italic">{children}</blockquote>,

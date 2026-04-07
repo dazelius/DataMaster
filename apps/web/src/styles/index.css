@@ -356,6 +356,24 @@ html {
   text-decoration-style: solid;
 }
 
+/* ── Mermaid diagram fixes ────────────────────────── */
+
+.mermaid-container svg {
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+.mermaid-container .nodeLabel,
+.mermaid-container .label {
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+.mermaid-container .edgeLabel {
+  font-size: 12px !important;
+}
+
 /* ── Chart animations ─────────────────────────────── */
 
 @keyframes fadeSlideIn {

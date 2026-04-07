@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import mermaid from 'mermaid';
 import { useNavigate, type NavigateFunction } from 'react-router-dom';
 import { InlineChart, InlineStat, parseChartBlock, parseStatBlock } from '../../../components/visualization';
+import { CodeBlock } from '../../../components/common/CodeBlock';
 
 let chatMermaidId = 0;
 
@@ -22,7 +23,7 @@ function ChatMermaid({ code }: { code: string }) {
   }, [code]);
 
   if (!svg) return <pre className="rounded-lg bg-[var(--color-surface-0)] border border-[var(--color-border)] p-3 my-2 overflow-x-auto text-[12px] font-mono">{code}</pre>;
-  return <div className="my-2 flex justify-center overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-0)] p-3" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="my-2 overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-0)] p-3 mermaid-container" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 function processWikilinks(text: string): string {
@@ -164,16 +165,12 @@ function ChatMarkdownContent({ content, navigate }: { content: string; navigate:
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
     li: ({ children }: { children?: ReactNode }) => <li className="text-[13px]">{linkifyWikiPaths(children, navigate)}</li>,
     strong: ({ children }: { children?: ReactNode }) => <strong className="font-semibold text-[var(--color-text-primary)]">{children}</strong>,
-    code: ({ className, children, ...props }: { className?: string; children?: ReactNode }) => {
-      if (!className) return <code className="rounded bg-[var(--color-surface-0)] px-1 py-0.5 text-[12px] font-mono" {...props}>{children}</code>;
-      if (className === 'language-mermaid') {
-        return <ChatMermaid code={String(children).replace(/\n$/, '')} />;
-      }
-      return (
-        <pre className="rounded-lg bg-[var(--color-surface-0)] border border-[var(--color-border)] p-3 my-2 overflow-x-auto">
-          <code className={`${className} text-[12px] font-mono`} {...props}>{children}</code>
-        </pre>
-      );
+    code: ({ className, children }: { className?: string; children?: ReactNode }) => {
+      if (!className) return <code className="rounded bg-[var(--color-surface-0)] px-1 py-0.5 text-[12px] font-mono">{children}</code>;
+      const raw = String(children).replace(/\n$/, '');
+      if (className === 'language-mermaid') return <ChatMermaid code={raw} />;
+      const lang = className.replace('language-', '');
+      return <CodeBlock code={raw} language={lang} compact />;
     },
     blockquote: ({ children }: { children?: ReactNode }) => <blockquote className="border-l-2 border-[var(--color-accent)] pl-3 my-2 text-[var(--color-text-muted)] italic">{children}</blockquote>,
     table: ({ children }: { children?: ReactNode }) => <div className="overflow-x-auto my-2"><table className="w-full text-[12px] border-collapse">{children}</table></div>,

@@ -463,6 +463,20 @@ class WikiService {
     }
   }
 
+  async revertPage(pagePath: string, commitHash: string): Promise<{ success: boolean; message: string }> {
+    const oldContent = await this.getPageVersion(pagePath, commitHash);
+    if (oldContent === null) {
+      return { success: false, message: `Revision ${commitHash} not found for ${pagePath}` };
+    }
+
+    const fullPath = this.resolvePath(pagePath);
+    await writeFile(fullPath, oldContent, 'utf-8');
+    await this.appendLog('revert', `${pagePath} → ${commitHash.substring(0, 7)}`);
+    await this.updateIndex();
+    await this.gitCommit(fullPath, `revert: ${pagePath} → ${commitHash.substring(0, 7)}`);
+    return { success: true, message: `Reverted ${pagePath} to revision ${commitHash.substring(0, 7)}` };
+  }
+
   async getPageHistory(pagePath: string, limit = 30): Promise<WikiHistoryEntry[]> {
     try {
       await this.gitReady;
