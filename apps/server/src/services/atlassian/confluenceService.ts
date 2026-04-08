@@ -26,34 +26,69 @@ function isConfigured(): boolean {
 
 function stripHtml(html: string): string {
   return html
-    .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/gi, '[macro]')
+    .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/gi, '\n> [macro]\n')
     .replace(/<ac:[^>]*\/>/gi, '')
     .replace(/<ac:[^>]*>[\s\S]*?<\/ac:[^>]*>/gi, '')
+    // headings → markdown
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_m, c) => `\n# ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_m, c) => `\n## ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_m, c) => `\n### ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    .replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, (_m, c) => `\n#### ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    .replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, (_m, c) => `\n##### ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    .replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, (_m, c) => `\n###### ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    // bold / italic / code
+    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**')
+    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '*$1*')
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
+    // tables → markdown tables
     .replace(/<table[\s\S]*?<\/table>/gi, (match) => {
-      const rows: string[] = [];
+      const rows: string[][] = [];
+      let isHeader = false;
       const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
       let trMatch;
       while ((trMatch = trRegex.exec(match)) !== null) {
         const cells: string[] = [];
+        const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/gi;
         const tdRegex = /<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi;
+        if (thRegex.test(trMatch[1])) isHeader = true;
         let tdMatch;
+        tdRegex.lastIndex = 0;
         while ((tdMatch = tdRegex.exec(trMatch[1])) !== null) {
           cells.push(tdMatch[1].replace(/<[^>]*>/g, '').trim());
         }
-        rows.push(cells.join(' | '));
+        rows.push(cells);
       }
-      return rows.join('\n') + '\n';
+      if (rows.length === 0) return '';
+      const lines: string[] = [];
+      const first = rows[0];
+      lines.push('| ' + first.join(' | ') + ' |');
+      lines.push('|' + first.map(() => '---').join('|') + '|');
+      for (let i = 1; i < rows.length; i++) {
+        lines.push('| ' + rows[i].join(' | ') + ' |');
+      }
+      return '\n' + lines.join('\n') + '\n';
     })
-    .replace(/<li[^>]*>/gi, '- ')
+    // lists
+    .replace(/<ol[^>]*>/gi, '\n')
+    .replace(/<\/ol>/gi, '\n')
+    .replace(/<ul[^>]*>/gi, '\n')
+    .replace(/<\/ul>/gi, '\n')
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, c) => `- ${c.replace(/<[^>]*>/g, '').trim()}\n`)
+    // links
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<\/h[1-6]>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<p[^>]*>/gi, '')
     .replace(/<[^>]*>/g, '')
+    // entities
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&rarr;/g, '→')
+    .replace(/&larr;/g, '←')
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(parseInt(code)))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

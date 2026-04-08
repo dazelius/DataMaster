@@ -463,6 +463,73 @@ class WikiService {
     }
   }
 
+  async movePage(
+    fromPath: string,
+    toPath: string,
+    updateRefs = true,
+  ): Promise<{ success: boolean; message: string; refsUpdated: number }> {
+    const sourcePage = await this.readPage(fromPath);
+    if (!sourcePage) {
+      return { success: false, message: `Source page '${fromPath}' not found`, refsUpdated: 0 };
+    }
+
+    const targetExists = await this.readPage(toPath);
+    if (targetExists) {
+      return { success: false, message: `Target page '${toPath}' already exists`, refsUpdated: 0 };
+    }
+
+    const targetFullPath = this.resolvePath(toPath);
+    const targetDir = dirname(targetFullPath);
+    if (!existsSync(targetDir)) await mkdir(targetDir, { recursive: true });
+
+    await writeFile(targetFullPath, `${serializeFrontmatter(sourcePage.frontmatter)}\n\n${sourcePage.content.trim()}\n`, 'utf-8');
+
+    const sourceFullPath = this.resolvePath(fromPath);
+    await unlink(sourceFullPath);
+
+    let refsUpdated = 0;
+    if (updateRefs) {
+      const linkPatterns = [
+        { find: `[[${fromPath}]]`, replace: `[[${toPath}]]` },
+        { find: `[[${fromPath}|`, replace: `[[${toPath}|` },
+        { find: `![[${fromPath}]]`, replace: `![[${toPath}]]` },
+        { find: `![[${fromPath}|`, replace: `![[${toPath}|` },
+      ];
+
+      const allPages = await this.listPages();
+      for (const page of allPages) {
+        if (page.path === toPath) continue;
+        const full = await this.readPage(page.path);
+        if (!full) continue;
+
+        let newContent = full.content;
+        let changed = false;
+        for (const lp of linkPatterns) {
+          if (newContent.includes(lp.find)) {
+            newContent = newContent.split(lp.find).join(lp.replace);
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          const fm = { ...full.frontmatter, updated: new Date().toISOString().split('T')[0] };
+          const fullPath = this.resolvePath(page.path);
+          await writeFile(fullPath, `${serializeFrontmatter(fm)}\n\n${newContent.trim()}\n`, 'utf-8');
+          refsUpdated++;
+        }
+      }
+    }
+
+    await this.appendLog('move', `${fromPath} → ${toPath} (${refsUpdated} refs updated)`);
+    await this.updateIndex();
+
+    await this.gitReady;
+    await this.git.add('-A');
+    await this.git.commit(`move: ${fromPath} → ${toPath} (${refsUpdated} refs updated)`);
+
+    return { success: true, message: `Moved ${fromPath} → ${toPath}`, refsUpdated };
+  }
+
   async revertPage(pagePath: string, commitHash: string): Promise<{ success: boolean; message: string }> {
     const oldContent = await this.getPageVersion(pagePath, commitHash);
     if (oldContent === null) {
@@ -993,6 +1060,126 @@ class WikiService {
       stalePages,
       isolatedPages,
     };
+  }
+
+  async batchPatch(
+    pattern: string,
+    replace: string,
+    scope: 'all' | string[] = 'all',
+  ): Promise<{ totalMatches: number; patchedPages: { path: string; count: number }[]; errors: string[] }> {
+    const pages = await this.listPages();
+    const targets = scope === 'all'
+      ? pages
+      : pages.filter((p) => {
+          return (scope as string[]).some((s) => {
+            if (s.endsWith('*')) return p.path.startsWith(s.slice(0, -1));
+            return p.path === s || p.path.startsWith(s + '/');
+          });
+        });
+
+    let totalMatches = 0;
+    const patchedPages: { path: string; count: number }[] = [];
+    const errors: string[] = [];
+    const changedPaths: string[] = [];
+
+    for (const page of targets) {
+      try {
+        const full = await this.readPage(page.path);
+        if (!full) continue;
+
+        const count = full.content.split(pattern).length - 1;
+        if (count === 0) continue;
+
+        const newContent = full.content.split(pattern).join(replace);
+        const fullPath = this.resolvePath(page.path);
+        const fm = { ...full.frontmatter, updated: new Date().toISOString().split('T')[0] };
+        await writeFile(fullPath, `${serializeFrontmatter(fm)}\n\n${newContent.trim()}\n`, 'utf-8');
+        changedPaths.push(fullPath);
+
+        totalMatches += count;
+        patchedPages.push({ path: page.path, count });
+      } catch (e) {
+        errors.push(`${page.path}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    if (changedPaths.length > 0) {
+      const summary = `batch_patch: "${pattern.slice(0, 30)}${pattern.length > 30 ? '...' : ''}" → "${replace.slice(0, 30)}${replace.length > 30 ? '...' : ''}" (${patchedPages.length} pages, ${totalMatches} matches)`;
+      await this.appendLog('batch_patch', summary);
+      await this.updateIndex();
+
+      await this.gitReady;
+      await this.git.add(changedPaths.map((p) => relative(this.baseDir, p).replace(/\\/g, '/')));
+      const indexPath = join(this.baseDir, 'index.md');
+      if (existsSync(indexPath)) await this.git.add('index.md');
+      const logPath = join(this.baseDir, 'log.md');
+      if (existsSync(logPath)) await this.git.add('log.md');
+      await this.git.commit(summary);
+    }
+
+    return { totalMatches, patchedPages, errors };
+  }
+
+  async searchPagesAdvanced(options: {
+    query?: string;
+    tags?: string[];
+    confidence?: string;
+    sources_contain?: string;
+    category?: string;
+    has_tag?: string;
+  }): Promise<WikiSearchResult[]> {
+    const allPages = options.category
+      ? await this.listPages(options.category)
+      : await this.listPages();
+
+    let filtered = allPages;
+
+    if (options.tags && options.tags.length > 0) {
+      filtered = filtered.filter((p) =>
+        options.tags!.every((t) => p.frontmatter.tags?.includes(t)),
+      );
+    }
+
+    if (options.has_tag) {
+      filtered = filtered.filter((p) =>
+        p.frontmatter.tags?.includes(options.has_tag!) ?? false,
+      );
+    }
+
+    if (options.confidence) {
+      filtered = filtered.filter((p) => p.frontmatter.confidence === options.confidence);
+    }
+
+    if (options.sources_contain) {
+      const needle = options.sources_contain.toLowerCase();
+      filtered = filtered.filter((p) =>
+        p.frontmatter.sources?.some((s) => s.toLowerCase().includes(needle)) ?? false,
+      );
+    }
+
+    if (options.query) {
+      const docs: { path: string; text: string; fm: WikiFrontmatter }[] = [];
+      for (const page of filtered) {
+        const full = await this.readPage(page.path);
+        if (!full) continue;
+        const text = `${full.frontmatter.title} ${full.frontmatter.tags?.join(' ') ?? ''} ${full.content}`;
+        docs.push({ path: page.path, text, fm: full.frontmatter });
+      }
+      return bm25Search(docs, options.query);
+    }
+
+    const results: WikiSearchResult[] = [];
+    for (const page of filtered) {
+      const full = await this.readPage(page.path);
+      if (!full) continue;
+      results.push({
+        path: page.path,
+        frontmatter: full.frontmatter,
+        score: 1,
+        snippet: full.content.substring(0, 200),
+      });
+    }
+    return results;
   }
 
   private async walkDir(dir: string, callback: (filePath: string) => Promise<void>): Promise<void> {

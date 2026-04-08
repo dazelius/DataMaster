@@ -9,6 +9,7 @@ import { chatRoutes } from './routes/chat.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { stringDataRoutes } from './routes/stringdata.js';
 import { assetRoutes } from './routes/assets.js';
+import { confluenceRoutes } from './routes/confluence.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -42,6 +43,7 @@ export async function buildApp() {
   app.register(wikiRoutes, { prefix: '/api/wiki' });
   app.register(stringDataRoutes, { prefix: '/api/stringdata' });
   app.register(assetRoutes, { prefix: '/api/assets' });
+  app.register(confluenceRoutes, { prefix: '/api/confluence' });
 
   return app;
 }

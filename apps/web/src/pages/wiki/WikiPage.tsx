@@ -14,6 +14,7 @@ import { useWikiStats } from '../../hooks/useWikiStats';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { InlineChart, InlineStat, parseChartBlock, parseStatBlock } from '../../components/visualization';
 import { CodeBlock } from '../../components/common/CodeBlock';
+import { DiffBlock, SearchBlock, TimelineBlock, TableCompareBlock, CodeEmbedBlock, ConfluenceBlock } from '../../components/wiki-blocks';
 import { WikiGraphView } from '../../components/wiki/WikiGraphView';
 import { TableNode } from '../../components/canvas/TableNode';
 import { RelationEdge } from '../../components/canvas/RelationEdge';
@@ -957,6 +958,48 @@ function MermaidDiagram({ code }: { code: string }) {
   );
 }
 
+/* ── Block Config Parsers ──────────────────────────── */
+
+function parseYamlLike(raw: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^\s*(\w[\w.]*)\s*:\s*(.+)$/);
+    if (m) result[m[1].trim()] = m[2].trim();
+  }
+  return result;
+}
+
+function parseTimelineEntries(raw: string): { time: string; label: string; color?: string; detail?: string }[] {
+  const entries: { time: string; label: string; color?: string; detail?: string }[] = [];
+  let current: Record<string, string> | null = null;
+  for (const line of raw.split('\n')) {
+    const itemMatch = line.match(/^-\s+(.+)/);
+    if (itemMatch) {
+      if (current && current.time && current.label) entries.push(current as { time: string; label: string; color?: string; detail?: string });
+      current = {};
+      const pairs = itemMatch[1].split(',').map((p) => p.trim());
+      for (const pair of pairs) {
+        const kv = pair.match(/^(\w+)\s*:\s*(.+)$/);
+        if (kv) current[kv[1].trim()] = kv[2].trim();
+      }
+    } else {
+      const kv = line.match(/^\s+(\w+)\s*:\s*(.+)$/);
+      if (kv && current) current[kv[1].trim()] = kv[2].trim();
+    }
+  }
+  if (current && current.time && current.label) entries.push(current as { time: string; label: string; color?: string; detail?: string });
+  return entries;
+}
+
+function parseNestedBlock(raw: string, blockName: string, field: string): string {
+  const blockRegex = new RegExp(`${blockName}:\\s*\\n([\\s\\S]*?)(?=\\n\\w+:|$)`);
+  const blockMatch = raw.match(blockRegex);
+  if (!blockMatch) return '';
+  const fieldRegex = new RegExp(`^\\s+${field}\\s*:\\s*(.+)$`, 'm');
+  const fieldMatch = blockMatch[1].match(fieldRegex);
+  return fieldMatch ? fieldMatch[1].trim() : '';
+}
+
 /* ── Query Embed (:::query ... :::) ──────────────── */
 
 function WikiQueryEmbed({ sql }: { sql: string }) {
@@ -986,10 +1029,14 @@ function WikiQueryEmbed({ sql }: { sql: string }) {
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-[var(--color-surface-2)] transition-colors"
       >
-        <svg className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12v-1.5c0-.621-.504-1.125-1.125-1.125M9.75 8.625c0 .621.504 1.125 1.125 1.125" />
+        <svg className={`w-3.5 h-3.5 flex-shrink-0 ${error ? 'text-red-400' : 'text-emerald-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          {error ? (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M12 12v-1.5c0-.621-.504-1.125-1.125-1.125M9.75 8.625c0 .621.504 1.125 1.125 1.125" />
+          )}
         </svg>
-        <code className="text-[11px] font-mono text-emerald-400 truncate flex-1">{sql}</code>
+        <code className={`text-[11px] font-mono truncate flex-1 ${error ? 'text-red-400' : 'text-emerald-400'}`}>{sql}</code>
         {result && (
           <span className="text-[10px] text-[var(--color-text-muted)] flex-shrink-0">
             {result.rowCount} rows{result.rowCount > result.rows.length ? ` (showing ${result.rows.length})` : ''}
@@ -1008,8 +1055,25 @@ function WikiQueryEmbed({ sql }: { sql: string }) {
             </div>
           )}
           {error && (
-            <div className="px-4 py-3 text-xs text-red-400 bg-red-500/5">
-              <span className="font-medium">Error:</span> {error}
+            <div className="px-4 py-3 bg-red-500/5 border-l-2 border-red-400">
+              <div className="flex items-start gap-2">
+                <svg className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold text-red-400 mb-1">쿼리 실행 오류</div>
+                  <div className="text-[11px] text-red-300/90 font-mono bg-red-500/10 rounded px-2 py-1.5 whitespace-pre-wrap break-all">{error}</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <code className="text-[10px] text-[var(--color-text-muted)] bg-[var(--color-surface-3)] rounded px-1.5 py-0.5 truncate max-w-[300px]">{sql}</code>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(sql)}
+                      className="text-[10px] text-[var(--color-accent)] hover:underline flex-shrink-0"
+                    >
+                      SQL 복사
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
           {result && result.columns.length > 0 && (
@@ -1298,8 +1362,9 @@ function WikiMarkdown({ content, navigateToPage, sectionChanges = [] }: { conten
     return m;
   }, [sectionChanges]);
   const parts = useMemo(() => {
-    const segments: { type: 'text' | 'embed' | 'query' | 'erd' | 'chart' | 'stat'; value: string }[] = [];
-    const combinedRegex = /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]|:::query\s*\n([\s\S]*?)\n:::|:::erd\s*\n([\s\S]*?)\n:::|:::chart\s*\n([\s\S]*?)\n:::|:::stat\s*\n([\s\S]*?)\n:::/g;
+    type BlockType = 'text' | 'embed' | 'query' | 'erd' | 'chart' | 'stat' | 'diff' | 'search' | 'timeline' | 'table-compare' | 'code' | 'confluence';
+    const segments: { type: BlockType; value: string }[] = [];
+    const combinedRegex = /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]|:::query\s*\n([\s\S]*?)\n:::|:::erd\s*\n([\s\S]*?)\n:::|:::chart\s*\n([\s\S]*?)\n:::|:::stat\s*\n([\s\S]*?)\n:::|:::diff\s*\n([\s\S]*?)\n:::|:::search\s*\n([\s\S]*?)\n:::|:::timeline\s*\n([\s\S]*?)\n:::|:::table-compare\s*\n([\s\S]*?)\n:::|:::code\s*\n([\s\S]*?)\n:::|:::confluence\s*\n([\s\S]*?)\n:::/g;
     let lastIndex = 0;
     let match;
 
@@ -1307,17 +1372,17 @@ function WikiMarkdown({ content, navigateToPage, sectionChanges = [] }: { conten
       if (match.index > lastIndex) {
         segments.push({ type: 'text', value: content.slice(lastIndex, match.index) });
       }
-      if (match[1] !== undefined) {
-        segments.push({ type: 'embed', value: match[1].trim() });
-      } else if (match[2] !== undefined) {
-        segments.push({ type: 'query', value: match[2].trim() });
-      } else if (match[3] !== undefined) {
-        segments.push({ type: 'erd', value: match[3].trim() });
-      } else if (match[4] !== undefined) {
-        segments.push({ type: 'chart', value: match[4].trim() });
-      } else if (match[5] !== undefined) {
-        segments.push({ type: 'stat', value: match[5].trim() });
-      }
+      if (match[1] !== undefined) segments.push({ type: 'embed', value: match[1].trim() });
+      else if (match[2] !== undefined) segments.push({ type: 'query', value: match[2].trim() });
+      else if (match[3] !== undefined) segments.push({ type: 'erd', value: match[3].trim() });
+      else if (match[4] !== undefined) segments.push({ type: 'chart', value: match[4].trim() });
+      else if (match[5] !== undefined) segments.push({ type: 'stat', value: match[5].trim() });
+      else if (match[6] !== undefined) segments.push({ type: 'diff', value: match[6].trim() });
+      else if (match[7] !== undefined) segments.push({ type: 'search', value: match[7].trim() });
+      else if (match[8] !== undefined) segments.push({ type: 'timeline', value: match[8].trim() });
+      else if (match[9] !== undefined) segments.push({ type: 'table-compare', value: match[9].trim() });
+      else if (match[10] !== undefined) segments.push({ type: 'code', value: match[10].trim() });
+      else if (match[11] !== undefined) segments.push({ type: 'confluence', value: match[11].trim() });
       lastIndex = match.index + match[0].length;
     }
 
@@ -1360,6 +1425,36 @@ function WikiMarkdown({ content, navigateToPage, sectionChanges = [] }: { conten
           const statConfig = parseStatBlock(part.value);
           if (statConfig) return <InlineStat key={`stat-${i}`} config={statConfig} />;
           return null;
+        }
+        if (part.type === 'diff') {
+          const cfg = parseYamlLike(part.value);
+          return <DiffBlock key={`diff-${i}`} table={cfg.table || ''} id={cfg.id} from={cfg.from} to={cfg.to} />;
+        }
+        if (part.type === 'search') {
+          const cfg = parseYamlLike(part.value);
+          const cols = cfg.columns ? cfg.columns.split(',').map((c: string) => c.trim()) : undefined;
+          return <SearchBlock key={`search-${i}`} source={cfg.source || 'StringData'} placeholder={cfg.placeholder} columns={cols} filter={cfg.filter} />;
+        }
+        if (part.type === 'timeline') {
+          const entries = parseTimelineEntries(part.value);
+          return <TimelineBlock key={`timeline-${i}`} entries={entries} />;
+        }
+        if (part.type === 'table-compare') {
+          const cfg = parseYamlLike(part.value);
+          const leftSql = parseNestedBlock(part.value, 'left', 'sql');
+          const rightSql = parseNestedBlock(part.value, 'right', 'sql');
+          const leftLabel = parseNestedBlock(part.value, 'left', 'label');
+          const rightLabel = parseNestedBlock(part.value, 'right', 'label');
+          return <TableCompareBlock key={`tc-${i}`} title={cfg.title} leftSql={leftSql} leftLabel={leftLabel} rightSql={rightSql} rightLabel={rightLabel} highlight={cfg.highlight as 'higher' | 'lower' | 'none' || 'higher'} />;
+        }
+        if (part.type === 'code') {
+          const cfg = parseYamlLike(part.value);
+          return <CodeEmbedBlock key={`code-${i}`} path={cfg.path || ''} startLine={cfg.startLine ? parseInt(cfg.startLine) : undefined} endLine={cfg.endLine ? parseInt(cfg.endLine) : undefined} lang={cfg.lang} />;
+        }
+        if (part.type === 'confluence') {
+          const cfg = parseYamlLike(part.value);
+          const secs = cfg.sections ? cfg.sections.split(',').map((s: string) => s.trim()) : undefined;
+          return <ConfluenceBlock key={`conf-${i}`} pageId={cfg.pageId || ''} sections={secs} />;
         }
         return (
           <ReactMarkdown

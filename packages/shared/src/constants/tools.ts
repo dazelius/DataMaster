@@ -34,6 +34,12 @@ export const TOOL_REGISTRY: ToolMeta[] = [
   { name: 'wiki_revert', label: '위키 복구', icon: '⏪', category: 'knowledge' },
   { name: 'wiki_create_from_template', label: '템플릿 생성', icon: '📝', category: 'knowledge' },
   { name: 'data_diff_summary', label: '데이터 변경 비교', icon: '🔄', category: 'data' },
+  { name: 'wiki_move', label: '위키 이동', icon: '📦', category: 'knowledge' },
+  { name: 'wiki_batch_patch', label: '위키 일괄 수정', icon: '🔧', category: 'knowledge' },
+  { name: 'wiki_patch', label: '위키 부분 수정', icon: '✏️', category: 'knowledge' },
+  { name: 'wiki_delete', label: '위키 삭제', icon: '🗑️', category: 'knowledge' },
+  { name: 'wiki_lint', label: '위키 건강 점검', icon: '🩺', category: 'knowledge' },
+  { name: 'list_tables', label: '테이블 목록', icon: '📋', category: 'data' },
 ];
 
 export function getToolMeta(toolName: string): ToolMeta | undefined {

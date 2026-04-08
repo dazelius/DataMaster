@@ -14,6 +14,36 @@ export function registerTool(plugin: ToolPlugin): void {
   registry.set(plugin.name, plugin);
 }
 
+async function validateQueryBlocks(content: string): Promise<{ line: number; sql: string; status: 'ok' | 'error'; rows?: number; message?: string }[]> {
+  const results: { line: number; sql: string; status: 'ok' | 'error'; rows?: number; message?: string }[] = [];
+  const queryBlockRegex = /:::query\s*\n([\s\S]*?):::/g;
+  let match;
+  while ((match = queryBlockRegex.exec(content)) !== null) {
+    const blockContent = match[1].trim();
+    const lineNum = content.substring(0, match.index).split('\n').length;
+
+    let sql = '';
+    for (const line of blockContent.split('\n')) {
+      const sqlMatch = line.match(/^sql:\s*(.+)$/i);
+      if (sqlMatch) { sql = sqlMatch[1].trim(); break; }
+    }
+    if (!sql) {
+      const singleLine = blockContent.split('\n').find((l) => l.trim().toUpperCase().startsWith('SELECT'));
+      if (singleLine) sql = singleLine.trim();
+    }
+    if (!sql) continue;
+
+    try {
+      const { serverExecuteQuery } = await import('../data/serverQueryEngine.js');
+      const rows = serverExecuteQuery(sql);
+      results.push({ line: lineNum, sql: sql.substring(0, 100), status: 'ok', rows: Array.isArray(rows) ? rows.length : 0 });
+    } catch (err) {
+      results.push({ line: lineNum, sql: sql.substring(0, 100), status: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
+}
+
 export async function executeTool(name: string, input: unknown): Promise<string> {
   const tool = registry.get(name);
   if (!tool) return `Unknown tool: ${name}`;
@@ -612,18 +642,58 @@ registerTool({
 
 registerTool({
   name: 'wiki_search',
-  description: 'Search the compiled wiki knowledge base for relevant pages. Always check here FIRST before querying raw data — the wiki contains pre-compiled, cross-referenced knowledge.',
-  inputSchema: z.object({ query: z.string() }),
+  description: `Search the compiled wiki knowledge base. Supports both text search (BM25) and structured frontmatter filters, or both combined.
+- Text only: { query: "전술 기동" }
+- Filter only: { filter: { confidence: "medium" } } → confidence가 medium인 모든 페이지
+- Filter only: { filter: { tags: ["code-analysis"], sources_contain: "CharacterStat" } }
+- Combined: { query: "프리드웬", filter: { category: "entities" } } → entities/ 내에서 텍스트 검색
+Always check wiki FIRST before querying raw data.`,
+  inputSchema: z.object({
+    query: z.string().optional(),
+    filter: z.object({
+      tags: z.array(z.string()).optional(),
+      confidence: z.enum(['low', 'medium', 'high']).optional(),
+      sources_contain: z.string().optional(),
+      category: z.string().optional(),
+      has_tag: z.string().optional(),
+    }).optional(),
+  }),
   claudeSchema: {
     type: 'object',
-    properties: { query: { type: 'string', description: 'Search query' } },
-    required: ['query'],
+    properties: {
+      query: { type: 'string', description: 'Text search query (BM25). Optional if filter is provided.' },
+      filter: {
+        type: 'object',
+        description: 'Structured frontmatter filters. Can combine with query for filtered text search.',
+        properties: {
+          tags: { type: 'array', items: { type: 'string' }, description: 'Pages must have ALL of these tags' },
+          confidence: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Filter by confidence level' },
+          sources_contain: { type: 'string', description: 'Sources array must contain this substring (e.g. "CharacterStat")' },
+          category: { type: 'string', description: 'Limit to category directory (e.g. "entities", "concepts")' },
+          has_tag: { type: 'string', description: 'Page must have this specific tag' },
+        },
+      },
+    },
+    required: [],
   },
   async execute(input) {
-    const { query } = input as { query: string };
+    const { query, filter } = input as {
+      query?: string;
+      filter?: { tags?: string[]; confidence?: string; sources_contain?: string; category?: string; has_tag?: string };
+    };
     const { wikiService } = await import('../wiki/wikiService.js');
-    const results = await wikiService.searchPages(query);
-    return JSON.stringify(results.slice(0, 10));
+
+    if (filter && (filter.tags || filter.confidence || filter.sources_contain || filter.category || filter.has_tag)) {
+      const results = await wikiService.searchPagesAdvanced({ query, ...filter });
+      return JSON.stringify(results.slice(0, 20));
+    }
+
+    if (query) {
+      const results = await wikiService.searchPages(query);
+      return JSON.stringify(results.slice(0, 10));
+    }
+
+    return JSON.stringify({ error: 'Provide query and/or filter' });
   },
 });
 
@@ -674,7 +744,17 @@ registerTool({
     };
     const { wikiService } = await import('../wiki/wikiService.js');
     await wikiService.writePage(path, { title, tags, sources, confidence }, content);
-    return JSON.stringify({ success: true, path, title, sourcesCount: sources?.length ?? 0 });
+
+    let query_validation: { line: number; sql: string; status: string; rows?: number; message?: string }[] | undefined;
+    if (content && content.includes(':::query')) {
+      try {
+        query_validation = await validateQueryBlocks(content);
+      } catch { /* validation is best-effort */ }
+    }
+
+    const result: Record<string, unknown> = { success: true, path, title, sourcesCount: sources?.length ?? 0 };
+    if (query_validation && query_validation.length > 0) result.query_validation = query_validation;
+    return JSON.stringify(result);
   },
 });
 
@@ -747,8 +827,17 @@ registerTool({
         default: return { op: 'append', content: '' } as const;
       }
     });
-    const result = await wikiService.patchPage(path, ops);
-    return JSON.stringify(result);
+    const patchResult = await wikiService.patchPage(path, ops);
+
+    const page = await wikiService.readPage(path);
+    if (page && page.content.includes(':::query')) {
+      try {
+        const qv = await validateQueryBlocks(page.content);
+        if (qv.length > 0) (patchResult as Record<string, unknown>).query_validation = qv;
+      } catch { /* validation is best-effort */ }
+    }
+
+    return JSON.stringify(patchResult);
   },
 });
 
@@ -814,6 +903,93 @@ registerTool({
     }
 
     const result = await wikiService.revertPage(path, commitHash);
+    return JSON.stringify(result);
+  },
+});
+
+registerTool({
+  name: 'wiki_move',
+  description: 'Move/rename a wiki page and automatically update all [[wikilinks]] and ![[embeds]] referencing it across the entire wiki. One atomic operation replaces the 3-step manual process (write new → delete old → batch fix links).',
+  inputSchema: z.object({
+    from: z.string(),
+    to: z.string(),
+    update_refs: z.boolean().optional().default(true),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', description: 'Current page path (e.g. "entities/old-name")' },
+      to: { type: 'string', description: 'New page path (e.g. "entities/new-name")' },
+      update_refs: { type: 'boolean', description: 'Auto-update all [[wikilinks]] pointing to this page. Default: true.' },
+    },
+    required: ['from', 'to'],
+  },
+  async execute(input) {
+    const { from, to, update_refs } = input as { from: string; to: string; update_refs?: boolean };
+    const { wikiService } = await import('../wiki/wikiService.js');
+    const result = await wikiService.movePage(from, to, update_refs ?? true);
+    return JSON.stringify(result);
+  },
+});
+
+registerTool({
+  name: 'wiki_batch_patch',
+  description: `Find-and-replace a text pattern across multiple wiki pages in one call. Ideal for broken link fixes, renaming, policy changes, and bulk typo corrections. Returns per-page match counts. Use scope "all" for every page, or provide path prefixes with wildcards (e.g. ["entities/*", "concepts/*"]).`,
+  inputSchema: z.object({
+    pattern: z.string(),
+    replace: z.string(),
+    scope: z.union([z.literal('all'), z.array(z.string())]).optional().default('all'),
+    dry_run: z.boolean().optional().default(false),
+  }),
+  claudeSchema: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Exact text pattern to find across wiki pages' },
+      replace: { type: 'string', description: 'Replacement text' },
+      scope: {
+        description: '"all" for every page, or array of path prefixes with optional * wildcard (e.g. ["entities/*", "concepts/weapon-system"])',
+        oneOf: [
+          { type: 'string', enum: ['all'] },
+          { type: 'array', items: { type: 'string' } },
+        ],
+      },
+      dry_run: { type: 'boolean', description: 'If true, only report matches without applying changes. Default: false.' },
+    },
+    required: ['pattern', 'replace'],
+  },
+  async execute(input) {
+    const { pattern, replace, scope, dry_run } = input as {
+      pattern: string; replace: string; scope?: 'all' | string[]; dry_run?: boolean;
+    };
+    const { wikiService } = await import('../wiki/wikiService.js');
+
+    if (dry_run) {
+      const pages = await wikiService.listPages();
+      const scopeArr = scope ?? 'all';
+      const targets = scopeArr === 'all'
+        ? pages
+        : pages.filter((p) =>
+            (scopeArr as string[]).some((s) => {
+              if (s.endsWith('*')) return p.path.startsWith(s.slice(0, -1));
+              return p.path === s || p.path.startsWith(s + '/');
+            }),
+          );
+
+      let totalMatches = 0;
+      const matches: { path: string; count: number }[] = [];
+      for (const page of targets) {
+        const full = await wikiService.readPage(page.path);
+        if (!full) continue;
+        const count = full.content.split(pattern).length - 1;
+        if (count > 0) {
+          matches.push({ path: page.path, count });
+          totalMatches += count;
+        }
+      }
+      return JSON.stringify({ dry_run: true, totalMatches, pages: matches });
+    }
+
+    const result = await wikiService.batchPatch(pattern, replace, scope ?? 'all');
     return JSON.stringify(result);
   },
 });
